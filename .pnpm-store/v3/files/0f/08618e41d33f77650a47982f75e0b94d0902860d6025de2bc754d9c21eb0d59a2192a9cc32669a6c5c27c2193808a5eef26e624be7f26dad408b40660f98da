@@ -1,0 +1,65 @@
+{
+	"name": "@vuedx/compiler-sfc",
+	"version": "0.7.1",
+	"main": "lib/index.js",
+	"module": "lib/index.mjs",
+	"types": "lib/index.d.ts",
+	"publishConfig": {
+		"types": "lib/index.d.ts"
+	},
+	"files": [
+		"lib"
+	],
+	"buildConfig": {
+		"external": [
+			"@babel/parser",
+			"@babel/types",
+			"@vue/compiler-dom",
+			"@vue/compiler-ssr",
+			"consolidate",
+			"estree-walker",
+			"lru-cache",
+			"hash-sum",
+			"magic-string",
+			"merge-source-map",
+			"path",
+			"postcss-modules",
+			"postcss-selector-parser",
+			"postcss",
+			"source-map",
+			"url"
+		]
+	},
+	"keywords": [
+		"vue",
+		"compiler",
+		"sfc"
+	],
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/znck/vue-developer-experience.git"
+	},
+	"author": "Rahul Kadyan <rahulkdn@gmail.com> (https://znck.me/)",
+	"funding": {
+		"type": "individual",
+		"url": "https://github.com/sponsors/znck"
+	},
+	"license": "MIT",
+	"bugs": {
+		"url": "https://github.com/znck/vue-developer-experience/issues"
+	},
+	"homepage": "https://github.com/znck/vue-developer-experience#readme",
+	"devDependencies": {
+		"@vue/compiler-sfc": "^3.0.2",
+		"quick-lru": "^5.1.1",
+		"typescript": "^4.0.3"
+	},
+	"dependencies": {
+		"@vue/compiler-core": "^3.0.2",
+		"lru-cache": "^6.0.0",
+		"source-map": "^0.6.1"
+	},
+	"scripts": {
+		"test": "node __tests__/run"
+	}
+}

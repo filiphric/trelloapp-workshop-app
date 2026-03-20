@@ -1,0 +1,82 @@
+.dp__time_input {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  user-select: none;
+  font-family: $dp__font_family;
+  color: var(--dp-text-color);
+}
+
+.dp__time_col_reg {
+  padding: 0 20px;
+}
+
+.dp__time_col_reg_with_button {
+  padding: 0 15px;
+}
+
+.dp__time_col_sec {
+  padding: 0 10px;
+}
+
+.dp__time_col_sec_with_button {
+  padding: 0 5px;
+}
+
+.dp__time_col {
+  font-size: $dp__time_font_size;
+  text-align: center;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+}
+
+.dp__time_display {
+  cursor: pointer;
+  color: var(--dp-text-color);
+  border-radius: $dp__border_radius;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 3px;
+
+  &:hover {
+    background: var(--dp-hover-color);
+    color: var(--dp-hover-text-color);
+  }
+}
+
+.dp__inc_dec_button {
+  padding: 5px;
+  margin: 0;
+  height: $dp__time_inc_dec_button_size;
+  width: $dp__time_inc_dec_button_size;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  border-radius: 50%;
+  color: var(--dp-icon-color);
+  box-sizing: border-box;
+
+  svg {
+    height: $dp__time_inc_dec_button_size;
+    width: $dp__time_inc_dec_button_size;
+  }
+
+  &:hover {
+    background: var(--dp-hover-color);
+    color: var(--dp-primary-color);
+  }
+}
+
+.dp__pm_am_button {
+  background: var(--dp-primary-color);
+  color: var(--dp-primary-text-color);
+  border: none;
+  padding: $dp__common_padding;
+  border-radius: $dp__border_radius;
+  cursor: pointer;
+}

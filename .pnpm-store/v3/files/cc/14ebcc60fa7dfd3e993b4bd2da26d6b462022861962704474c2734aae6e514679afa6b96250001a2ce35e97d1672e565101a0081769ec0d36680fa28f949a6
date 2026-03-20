@@ -1,0 +1,1031 @@
+import * as Path from 'path';
+import { uriToFsPath, URI } from 'vscode-uri';
+import { createAnalyzer, ScriptBlockAnalyzer, ComponentsOptionAnalyzer } from '@vuedx/analyze';
+import { parse } from '@vuedx/compiler-sfc';
+import { compile, getTopLevelIdentifiers } from '@vuedx/compiler-tsx';
+import { isNumber, isNotNull, isString, getComponentName } from '@vuedx/shared';
+import { SourceMapConsumer } from 'source-map';
+import { TextDocument } from 'vscode-languageserver-textdocument';
+
+function getLanguageIdFromExtension(ext) {
+    switch (ext) {
+        case 'js':
+            return 'javascript';
+        case 'ts':
+            return 'typescript';
+    }
+    return ext;
+}
+// Vue File: foo.vue
+const VIRTUAL_FILENAME_SEPARATOR = '________';
+function basename(fileName) {
+    return Path.posix.basename(fileName);
+}
+function relativeVirtualImportPath(fileName) {
+    return `./${basename(fileName).replace(/\.[^.]+$/, '')}`;
+}
+function isVueFile(fileName) {
+    return fileName.endsWith('.vue');
+}
+function isVirtualFile(fileName) {
+    return fileName.indexOf('.vue' + VIRTUAL_FILENAME_SEPARATOR) > 0;
+}
+function isVirtualFileOfType(fileName, type) {
+    return fileName.indexOf('.vue' + VIRTUAL_FILENAME_SEPARATOR + type) > 0;
+}
+function getContainingFile(fileName) {
+    var _a;
+    return (_a = fileName.split(VIRTUAL_FILENAME_SEPARATOR).shift()) !== null && _a !== void 0 ? _a : fileName;
+}
+function asUri(fileNameOrUri) {
+    if (isUri(fileNameOrUri))
+        return fileNameOrUri;
+    const uri = asFsUri(fileNameOrUri);
+    if (isVirtualFile(fileNameOrUri)) {
+        return uri.replace(/^file:/, 'vue:');
+    }
+    return uri;
+}
+function isUri(fileNameOrUri) {
+    return /^[a-z]{2,}:\//i.test(fileNameOrUri);
+}
+function encodeURIComponentMinimal(path) {
+    var _a;
+    let res;
+    for (let pos = 0; pos < path.length; pos++) {
+        const code = path.charCodeAt(pos);
+        if (code === 35 || code === 63) {
+            if (res === undefined) {
+                res = path.substr(0, pos);
+            }
+            res += code === 35 ? '%23' : '%3F';
+        }
+        else {
+            if (res !== undefined) {
+                res = `${res}${(_a = path[pos]) !== null && _a !== void 0 ? _a : ''}`;
+            }
+        }
+    }
+    return res !== undefined ? res : path;
+}
+function asFsUri(fileName) {
+    return `file://${fileName.startsWith('/') ? '' : '/'}${encodeURIComponentMinimal(replaceSlashes(fileName))}`;
+}
+function replaceSlashes(fileName) {
+    if (fileName.includes('\\'))
+        return fileName.replace(/\\/g, '/');
+    return fileName;
+}
+function asFsPath(uri) {
+    if (isUri(uri)) {
+        return replaceSlashes(uriToFsPath(URI.parse(uri), true));
+    }
+    return replaceSlashes(uri);
+}
+function parseVirtualFileName(fileName) {
+    const uri = URI.parse(asUri(fileName));
+    if (uri.scheme === 'vue') {
+        let [container, selector] = asFsPath(fileName).split(VIRTUAL_FILENAME_SEPARATOR);
+        if (container == null || selector == null)
+            return null;
+        if (!selector.includes('.')) {
+            selector += '.'; // Append a dot when extension is missing.
+        }
+        const [block, index] = selector
+            .substr(0, selector.lastIndexOf('.'))
+            .split('__');
+        return {
+            uri: asFsUri(container),
+            selector: (index != null
+                ? { type: block, index: parseInt(index, 10) }
+                : { type: block }),
+        };
+    }
+    return null;
+}
+const languages = {
+    scriptSetup: 'javascript',
+    script: 'javascript',
+    template: 'vue-html',
+    style: 'css',
+    preview: 'vue-html',
+    docs: 'markdown',
+};
+function getBlockLanguage(block) {
+    var _a;
+    if (block == null)
+        return '';
+    if (block.lang != null) {
+        if (block.lang === 'js')
+            return 'javascript';
+        if (block.lang === 'ts')
+            return 'typescript';
+        return block.lang;
+    }
+    return (_a = languages[block.type]) !== null && _a !== void 0 ? _a : block.type;
+}
+function isOffsetInBlock(offset, block) {
+    if (block == null)
+        return false;
+    return block.loc.start.offset <= offset && offset <= block.loc.end.offset;
+}
+const extensions = {
+    javascript: 'js',
+    javascriptreact: 'jsx',
+    typescript: 'ts',
+    typescriptreact: 'tsx',
+    markdown: 'md',
+};
+function getLanguageExtension(lang) {
+    var _a;
+    return (_a = extensions[lang]) !== null && _a !== void 0 ? _a : lang;
+}
+function binarySearch(array, isMatch, returnMin) {
+    let lo = 0;
+    let hi = array.length - 1;
+    while (lo <= hi) {
+        const mid = ~~(lo + (hi - lo) / 2);
+        // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+        const result = isMatch(array[mid]); // Mid always exists.
+        if (result === 0) {
+            return array[mid];
+        }
+        if (result < 0)
+            lo = mid + 1;
+        else
+            hi = mid - 1;
+    }
+    if (returnMin === true) {
+        return array[lo];
+    }
+    return undefined;
+}
+
+const TEMPLATE_BLOCK_SELECTOR = 'template';
+const SCRIPT_BLOCK_SELECTOR = 'script';
+const SCRIPT_SETUP_BLOCK_SELECTOR = 'scriptSetup';
+const RENDER_SELECTOR = '_render';
+const MODULE_SELECTOR = '_module';
+const INTERNAL_MODULE_SELECTOR = '_internal';
+const TEMPLATE_AST_SELECTOR = '_ast';
+
+class DocumentStore {
+    constructor(resolve, normalize = (uri) => uri) {
+        this.resolve = resolve;
+        this.normalize = normalize;
+        this.map = new Map();
+        this.reverseUriMap = new Map();
+    }
+    getNormalizedUri(uri) {
+        var _a;
+        return (_a = this.reverseUriMap.get(this.normalize(uri))) !== null && _a !== void 0 ? _a : uri;
+    }
+    has(uri) {
+        return this.map.has(this.getNormalizedUri(uri));
+    }
+    get(uri) {
+        var _a;
+        return (_a = this.map.get(this.getNormalizedUri(uri))) !== null && _a !== void 0 ? _a : this.loadSync(uri);
+    }
+    set(uri, document) {
+        this.map.set(uri, document);
+        this.reverseUriMap.set(uri.toLowerCase(), uri);
+    }
+    delete(uri) {
+        return this.map.delete(this.getNormalizedUri(uri));
+    }
+    all() {
+        return Array.from(this.map.keys());
+    }
+    dispose() {
+        this.map.clear();
+    }
+    loadSync(uri) {
+        const document = this.resolve(uri);
+        if (document != null) {
+            this.set(uri, document);
+        }
+        return document;
+    }
+}
+class AsyncDocumentStore extends DocumentStore {
+    constructor(resolve, normalize = (uri) => uri) {
+        super(resolve, normalize);
+    }
+    get(uri) {
+        var _a;
+        return (_a = this.map.get(this.getNormalizedUri(uri))) !== null && _a !== void 0 ? _a : this.load(uri);
+    }
+    async load(uri) {
+        const document = await this.resolve(uri);
+        if (document != null) {
+            this.map.set(this.getNormalizedUri(uri), document);
+        }
+        return document;
+    }
+}
+
+class ProxyTextDocument {
+    constructor(doc) {
+        this.doc = doc;
+        this.fsPath = asFsPath(this.doc.uri);
+    }
+    get version() {
+        this.refresh();
+        return this.doc.version;
+    }
+    get languageId() {
+        return this.doc.languageId;
+    }
+    get lineCount() {
+        this.refresh();
+        return this.doc.lineCount;
+    }
+    get uri() {
+        return this.doc.uri;
+    }
+    getText(range, length) {
+        this.refresh();
+        if (isNumber(range)) {
+            return this.doc.getText().substr(range, length);
+        }
+        else {
+            return this.doc.getText(range);
+        }
+    }
+    positionAt(offset) {
+        this.refresh();
+        return this.doc.positionAt(offset);
+    }
+    offsetAt(position) {
+        this.refresh();
+        return this.doc.offsetAt(position);
+    }
+    refresh() { }
+}
+
+const analyzer = createAnalyzer([ScriptBlockAnalyzer, ComponentsOptionAnalyzer]);
+const replaceRE = /./g;
+const parseSFC = (source, options) => {
+    var _a;
+    const result = parse(source, options);
+    // @vue/compiler-sfc does not pads template.
+    if (((_a = result.descriptor.template) === null || _a === void 0 ? void 0 : _a.content) != null) {
+        const { template } = result.descriptor;
+        // @ts-expect-error - parse reuses
+        if (template.__padded__ !== true) {
+            // @ts-expect-error
+            template.__padded__ = true;
+            template.content =
+                source.substr(0, template.loc.start.offset).replace(replaceRE, ' ') +
+                    template.content;
+        }
+    }
+    return result;
+};
+class VirtualTextDocument extends ProxyTextDocument {
+    constructor(container, selector, doc) {
+        super(doc);
+        this.isDirty = true;
+        this.container = container;
+        this.selector = selector;
+    }
+    markDirty() {
+        this.isDirty = true;
+    }
+    refresh() {
+        if (this.isDirty || this.doc.version !== this.container.version) {
+            this.isDirty = false;
+            const block = this.container.getBlock(this.selector);
+            this.doc = TextDocument.update(this.doc, [{ text: block != null ? block.content : '' }], this.container.version);
+        }
+    }
+    static create(options) {
+        return new VirtualTextDocument(options.container, options.selector, TextDocument.create(options.uri, options.languageId, options.version, options.content));
+    }
+}
+class TransformedBlockTextDocument extends VirtualTextDocument {
+    constructor(container, selector, transformed, source, _transform) {
+        super(container, selector, transformed);
+        this.source = source;
+        this._transform = _transform;
+        this.consumer = null;
+    }
+    toTextDocumentPosition({ line, column, }) {
+        return { line: line - 1, character: column };
+    }
+    toSourceMapPosition({ line, character, }) {
+        return { line: line + 1, column: character };
+    }
+    tryGetSourceOffset(offset) {
+        if (this.consumer != null) {
+            const position = this.consumer.originalPositionFor({
+                ...this.toSourceMapPosition(this.doc.positionAt(offset)),
+                bias: SourceMapConsumer.GREATEST_LOWER_BOUND,
+            });
+            if ((position === null || position === void 0 ? void 0 : position.line) != null) {
+                const generated = this.consumer.generatedPositionFor({
+                    ...position,
+                    bias: SourceMapConsumer.GREATEST_LOWER_BOUND,
+                });
+                const delta = offset - this.offsetAt(this.toTextDocumentPosition(generated));
+                return (this.source.offsetAt(this.toTextDocumentPosition(position)) + delta);
+            }
+        }
+        return undefined;
+    }
+    tryGetGeneratedOffset(offset) {
+        if (this.consumer != null) {
+            const generated = this.consumer.generatedPositionFor({
+                ...this.toSourceMapPosition(this.source.positionAt(offset)),
+                source: this.container.fsPath,
+                bias: SourceMapConsumer.GREATEST_LOWER_BOUND,
+            });
+            if (generated.line != null) {
+                const original = this.consumer.originalPositionFor({
+                    ...generated,
+                    bias: SourceMapConsumer.GREATEST_LOWER_BOUND,
+                });
+                const delta = offset - this.source.offsetAt(this.toTextDocumentPosition(original));
+                return this.doc.offsetAt(this.toTextDocumentPosition(generated)) + delta;
+            }
+        }
+        return undefined;
+    }
+    refresh() {
+        if (this.isDirty || this.doc.version !== this.container.version) {
+            const { code, map } = this.transform();
+            if (map != null) {
+                if (!(this.source instanceof VirtualTextDocument)) {
+                    const block = this.container.getBlock(this.selector);
+                    this.source = TextDocument.update(this.source, [{ text: block != null ? block.content : '' }], this.container.version);
+                }
+                map.sources = [this.container.fsPath];
+                this.consumer = new SourceMapConsumer(map);
+            }
+            this.doc = TextDocument.update(this.doc, [{ text: code }], this.container.version);
+            this.isDirty = false;
+        }
+    }
+    transform() {
+        return this._transform(this);
+    }
+    static create(options) {
+        const source = options.sourceSelector != null
+            ? options.container.getDocument(options.sourceSelector)
+            : TextDocument.create(options.uri, options.languageId, -1, options.content);
+        return new TransformedBlockTextDocument(options.container, options.selector, TextDocument.create(options.uri, options.languageId, -1, options.content), source, options.transformer);
+    }
+}
+function createVueModuleTextDocument(options) {
+    return TransformedBlockTextDocument.create({
+        ...options,
+        languageId: 'ts',
+        transformer: (document) => {
+            const { script, scriptSetup, template } = document.container.descriptor;
+            const api = document.container.options.vueVersion.startsWith('2.')
+                ? '__vuedx_runtime__vue2__'
+                : 'vue';
+            const lines = [];
+            let scriptHasDefaultExport = false;
+            let scriptMayHaveDefaultExport = false;
+            let scriptSetupHasDefaultExport = false;
+            let usesDefineComponent = false;
+            let usePropTypes = false;
+            const name = getComponentName(document.container.fsPath);
+            if (script != null) {
+                const path = script.src != null
+                    ? script.src.replace(/\.([^.]+)$/, '')
+                    : relativeVirtualImportPath(document.container.getDocumentFileName('script'));
+                lines.push(`export * from '${path}'`);
+                lines.unshift(`import script from '${path}'`);
+                scriptHasDefaultExport = script.content.includes('export default ');
+                usesDefineComponent =
+                    script.content.includes(' defineComponent(') ||
+                        script.content.includes(' defineComponent<');
+                scriptMayHaveDefaultExport = script.src != null;
+            }
+            if (scriptSetup != null) {
+                const path = relativeVirtualImportPath(document.container.getDocumentFileName('scriptSetup'));
+                lines.unshift(`import * as scriptSetup from '${path}'`);
+                scriptSetupHasDefaultExport = true;
+                usesDefineComponent = true;
+                usePropTypes = false;
+            }
+            if (!usesDefineComponent) {
+                lines.unshift(`import { defineComponent } from '${api}'`);
+            }
+            if (scriptSetupHasDefaultExport) {
+                lines.push(`const ${name} = ${usesDefineComponent
+                    ? 'scriptSetup.default'
+                    : 'defineComponent(scriptSetup.default)'}`);
+            }
+            else if (scriptHasDefaultExport || scriptMayHaveDefaultExport) {
+                lines.push(`const ${name} = ${usesDefineComponent ? 'script' : 'defineComponent(script)'}`);
+            }
+            else {
+                lines.push(`const ${name} = defineComponent${usePropTypes ? '<scriptSetup.$Props>' : ''}({})`);
+            }
+            const renderFilePath = relativeVirtualImportPath(document.container.getDocumentFileName('_render'));
+            if (template != null) {
+                lines.unshift(`import { render } from '${renderFilePath}'`);
+                lines.push(`${name}.render = render`);
+            }
+            else {
+                lines.unshift(`import "${renderFilePath}"`);
+            }
+            lines.push(`export default ${name}`);
+            return { code: lines.join('\n') };
+        },
+    });
+}
+function createInternalModuleTextDocument(options) {
+    return TransformedBlockTextDocument.create({
+        ...options,
+        transformer: (document) => {
+            const script = document.container.descriptor.script;
+            const scriptSetup = document.container.descriptor.scriptSetup;
+            const api = document.container.options.vueVersion.startsWith('2.')
+                ? '__vuedx_runtime__vue2__'
+                : 'vue';
+            const lines = [];
+            lines.push(`import { defineComponent } from '${api}'`);
+            if (scriptSetup != null) {
+                const path = relativeVirtualImportPath(document.container.getDocumentFileName('scriptSetup'));
+                lines.push(`import component from '${path}'`);
+            }
+            else if (script != null) {
+                const path = relativeVirtualImportPath(document.container.getDocumentFileName('script'));
+                const hasDefineComponent = script.content.includes(` defineComponent(`);
+                lines.push(`import script from '${path}'`);
+                if (hasDefineComponent) {
+                    lines.push(`const component = script`);
+                }
+                else {
+                    lines.push(`const component = defineComponent(script)`);
+                }
+            }
+            else {
+                lines.push(`import { defineComponent } from '${api}'`);
+                lines.push(`const component = defineComponent({})`);
+            }
+            lines.push(`export default component`);
+            return { code: lines.join('\n') };
+        },
+    });
+}
+function createScriptSetupTextDocument(options) {
+    return TransformedBlockTextDocument.create({
+        ...options,
+        transformer: (document) => {
+            const { scriptSetup } = document.container.descriptor;
+            if (scriptSetup == null)
+                return { code: '' };
+            const { identifiers, propsIdentifier, emitIdentifier, } = getTopLevelIdentifiers(scriptSetup.content, ['vue']);
+            if (propsIdentifier != null) {
+                identifiers.delete(propsIdentifier);
+            }
+            if (emitIdentifier != null) {
+                identifiers.delete(emitIdentifier);
+            }
+            const propType = propsIdentifier != null ? `typeof ${propsIdentifier}` : '{}';
+            return {
+                code: [
+                    scriptSetup.content,
+                    `/*@@vuedx:script-setup-export*/`,
+                    `// @ts-ignore`,
+                    `import { defineComponent as _VueDX_defineComponent } from 'vue'`,
+                    `// @ts-ignore`,
+                    `export default _VueDX_defineComponent(${scriptSetup.lang !== 'ts'
+                        ? `/** @param {${propType}} _VueDX_props*/`
+                        : ''}(_VueDX_props${scriptSetup.lang === 'ts' ? `: ${propType}` : ''}) => ({${Array.from(identifiers).join(',')}}))`,
+                    ``,
+                ].join('\n'),
+            };
+        },
+    });
+}
+// TODO: Support style variables type check.
+class RenderFunctionTextDocument extends TransformedBlockTextDocument {
+    constructor(container, selector, transformed, source) {
+        super(container, selector, transformed, source, () => {
+            var _a;
+            const code = this.tryGenerate();
+            return { code, map: (_a = this.result) === null || _a === void 0 ? void 0 : _a.map };
+        });
+        this.originalRange = [0, 0];
+        this.originalMappings = [];
+        this.generatedRange = [0, 0];
+        this.templateIdentifiersRange = [0, 0];
+        this.generatedMappings = [];
+        this.expressionsMap = {};
+        this._contextCompletionsTriggerOffset = 0;
+        this._tagCompletionsTriggerOffset = 0;
+    }
+    get contextCompletionsTriggerOffset() {
+        return this._contextCompletionsTriggerOffset;
+    }
+    get tagCompletionsTriggerOffset() {
+        return this._tagCompletionsTriggerOffset;
+    }
+    get ast() {
+        this.refresh();
+        if (this.result != null)
+            return this.result.ast;
+        return undefined;
+    }
+    get parserErrors() {
+        var _a, _b;
+        return (_b = (_a = this.result) === null || _a === void 0 ? void 0 : _a.errors) !== null && _b !== void 0 ? _b : [];
+    }
+    getOriginalOffsetAt(offset) {
+        this.refresh();
+        const [start, end] = this.generatedRange;
+        if (start <= offset && offset <= end) {
+            const mapping = binarySearch(this.generatedMappings, ([start, length]) => {
+                if (start <= offset && offset <= start + length)
+                    return 0;
+                return start - offset;
+            }, true);
+            if (mapping != null) {
+                const offsetInSource = mapping[0] <= offset && offset <= mapping[0] + mapping[1]
+                    ? offset - mapping[0]
+                    : mapping[3] === 0
+                        ? -1 // Include previous character if mapped to zero length
+                        : 0;
+                return {
+                    offset: mapping[2] + offsetInSource,
+                    length: Math.max(1, mapping[3] - offsetInSource),
+                };
+            }
+        }
+        return undefined;
+    }
+    findExpression(offset, length) {
+        const text = this.getText().substr(offset, length);
+        const expression = this.expressionsMap[text.trim()];
+        if (expression != null) {
+            return { offset: expression[0], length: expression[1] };
+        }
+        return undefined;
+    }
+    isInGeneratedRange(offset) {
+        this.refresh();
+        const [start, end] = this.generatedRange;
+        return start <= offset && offset <= end;
+    }
+    isInTemplateIdentifierRange(offset) {
+        this.refresh();
+        const [start, end] = this.templateIdentifiersRange;
+        return start <= offset && offset <= end;
+    }
+    getGeneratedOffsetAt(offset) {
+        this.refresh();
+        const [start, end] = this.originalRange;
+        if (start <= offset && offset <= end) {
+            const mapping = binarySearch(this.originalMappings, ([, , start, length]) => {
+                if (start <= offset && offset <= start + length)
+                    return 0;
+                return start - offset;
+            });
+            if (mapping != null) {
+                const offsetInGenerated = offset - mapping[2];
+                return {
+                    offset: mapping[0] + offsetInGenerated,
+                    length: Math.max(1, mapping[1] - offsetInGenerated),
+                };
+            }
+        }
+        return undefined;
+    }
+    getAllGeneratedOffsetsAt(offset) {
+        this.refresh();
+        const [start, end] = this.originalRange;
+        if (start <= offset && offset <= end) {
+            const mappings = this.generatedMappings.filter(([, , start, length]) => {
+                return start <= offset && offset <= start + length;
+            });
+            return mappings.map((mapping) => {
+                const offsetInGenerated = mapping[2] <= offset && offset <= mapping[2] + mapping[3]
+                    ? offset - mapping[2]
+                    : 0;
+                return {
+                    offset: mapping[0] + offsetInGenerated,
+                    length: Math.max(1, mapping[1] - offsetInGenerated),
+                };
+            });
+        }
+        return [];
+    }
+    tryGenerate() {
+        var _a, _b;
+        try {
+            return this.generate();
+        }
+        catch (error) {
+            const code = `\n/* ${error.message} ${(_a = error.stack) !== null && _a !== void 0 ? _a : ''} */ \n`;
+            if (error.loc == null) {
+                error.loc = (_b = this.container.descriptor.template) === null || _b === void 0 ? void 0 : _b.loc;
+            }
+            this.originalRange = [0, 0];
+            this.originalMappings = [];
+            this.generatedRange = [0, 0];
+            this.templateIdentifiersRange = [0, 0];
+            this.generatedMappings = [];
+            this.result = {
+                preamble: '',
+                errors: [error],
+                code,
+                ast: null,
+                expressions: [],
+                mappings: [],
+            };
+            return code;
+        }
+    }
+    generate() {
+        var _a;
+        const { template } = this.container.descriptor;
+        if (template == null) {
+            return '';
+        }
+        else if (!this.isDirty && ((_a = this.result) === null || _a === void 0 ? void 0 : _a.template) === template.content) {
+            return this.result.code;
+        }
+        else {
+            const errors = [];
+            const components = this.getKnownComponents();
+            this.result = compile(template.content, {
+                mode: 'module',
+                filename: this.container.fsPath,
+                components: components,
+                onError: (error) => {
+                    errors.push(error);
+                },
+            });
+            this.result.template = template.content;
+            this.result.errors.push(...errors);
+            this.originalRange = [template.loc.start.offset, template.loc.end.offset];
+            this.originalMappings = this.result.mappings.slice();
+            this.generatedRange = [
+                this.result.code.indexOf('/*@@vue:start*/'),
+                this.result.code.indexOf('/*@@vue:end*/'),
+            ];
+            this.templateIdentifiersRange = [
+                this.result.code.indexOf('/*@@vue:identifiers-start*/'),
+                this.result.code.indexOf('/*@@vue:identifiers-end*/'),
+            ];
+            this.generatedMappings = this.result.mappings.filter((m) => this.generatedRange[0] <= m[0] && m[1] <= this.generatedRange[1]);
+            this._contextCompletionsTriggerOffset = this.result.code.indexOf('/*@@vue:completions*/');
+            this._tagCompletionsTriggerOffset =
+                this.result.code.indexOf('/*@@vue:completionsTag*/') +
+                    '/*@@vue:completionsTag*/'.length +
+                    1;
+            this.originalMappings.sort((a, b) => a[2] - b[2]);
+            this.generatedMappings.sort((a, b) => a[0] - b[0]);
+            this.expressionsMap = {};
+            const code = this.result.code;
+            this.generatedMappings.forEach((p) => {
+                this.expressionsMap[code.substr(p[0], p[1])] = [p[2], p[3]];
+            });
+            return this.result.code;
+        }
+    }
+    toDisplayMappings() {
+        const mappings = [];
+        const pos = (p) => `${p.line + 1}:${p.character + 1}`;
+        if (this.result != null) {
+            const templateDoc = this.container.getDocument('template');
+            const template = templateDoc.getText();
+            const render = this.doc.getText();
+            this.result.mappings.forEach((m) => {
+                mappings.push(`${pos(templateDoc.positionAt(m[2]))} => ${pos(this.doc.positionAt(m[0]))} (${m[3]}:${m[1]}) "${template.substr(m[2], m[3])}"->"${render.substr(m[0], m[1])}"`);
+            });
+        }
+        return mappings.join('\n');
+    }
+    getKnownComponents() {
+        var _a;
+        const componentsByName = {};
+        const dir = Path.posix.dirname(this.container.fsPath);
+        this.container.options.getGlobalComponents().forEach((component) => {
+            const result = {
+                path: Path.posix.isAbsolute(component.source.moduleName)
+                    ? getRelativeFileName(dir, component.source.moduleName)
+                    : component.source.moduleName,
+                named: component.source.exportName != null,
+                name: component.source.exportName,
+            };
+            component.aliases.forEach((name) => {
+                componentsByName[name] = result;
+            });
+        });
+        const { script, scriptSetup } = this.container.descriptor;
+        const content = (_a = scriptSetup === null || scriptSetup === void 0 ? void 0 : scriptSetup.content) !== null && _a !== void 0 ? _a : script === null || script === void 0 ? void 0 : script.content;
+        if (content != null) {
+            // TODO: Cache this.
+            try {
+                const result = analyzer.analyzeScript(content, 'component.ts');
+                result.components.forEach((component) => {
+                    const result = {
+                        path: component.source.moduleName,
+                        named: component.source.exportName != null,
+                        name: component.source.exportName,
+                    };
+                    component.aliases.forEach((name) => {
+                        componentsByName[name] = result;
+                    });
+                });
+            }
+            catch {
+                // TODO: Handle this...
+            }
+        }
+        return componentsByName;
+    }
+    static create(options) {
+        return new RenderFunctionTextDocument(options.container, options.selector, TextDocument.create(options.uri, options.languageId, options.version, options.content), options.container.getDocument('template'));
+    }
+}
+class VueTextDocument extends ProxyTextDocument {
+    constructor(doc, options, parseOptions) {
+        super(doc);
+        this.isDirty = true;
+        this.documents = new Map();
+        this.options = {
+            vueVersion: '3.0.0',
+            getGlobalComponents: () => [],
+            ...options,
+        };
+        this.parseOptions = {
+            ...parseOptions,
+            filename: this.fsPath,
+            sourceMap: false,
+            pad: 'space',
+        };
+    }
+    get descriptor() {
+        this.parse();
+        return this.sfc.descriptor;
+    }
+    all() {
+        this.parse();
+        return Array.from(this.documents.values()).filter(isNotNull);
+    }
+    getBlock(selector) {
+        this.parse();
+        switch (selector.type) {
+            case SCRIPT_BLOCK_SELECTOR:
+                return this.descriptor.script;
+            case SCRIPT_SETUP_BLOCK_SELECTOR:
+                return this.descriptor.scriptSetup;
+            case TEMPLATE_BLOCK_SELECTOR:
+                return this.descriptor.template;
+            default:
+                if ('index' in selector) {
+                    const blocks = selector.type === 'style'
+                        ? this.descriptor.styles
+                        : this.descriptor.customBlocks;
+                    return blocks[selector.index];
+                }
+        }
+        return undefined;
+    }
+    blockAt(position) {
+        var _a;
+        const descriptor = this.descriptor;
+        const offset = isNumber(position) ? position : this.offsetAt(position);
+        if (isOffsetInBlock(offset, descriptor.template))
+            return descriptor.template;
+        if (isOffsetInBlock(offset, descriptor.script))
+            return descriptor.script;
+        if (isOffsetInBlock(offset, descriptor.scriptSetup))
+            return descriptor.scriptSetup;
+        return ((_a = descriptor.styles.find(isOffsetInBlock.bind(null, offset))) !== null && _a !== void 0 ? _a : descriptor.customBlocks.find(isOffsetInBlock.bind(null, offset)));
+    }
+    documentAt(position) {
+        const block = this.blockAt(position);
+        if (block != null) {
+            const selector = this.getBlockSelector(block);
+            if (selector != null) {
+                return this.getDocument(selector);
+            }
+        }
+        return undefined;
+    }
+    getBlockSelector(block) {
+        switch (block.type) {
+            case 'script':
+                if ('setup' in block) {
+                    return { type: SCRIPT_SETUP_BLOCK_SELECTOR };
+                }
+                else {
+                    return { type: SCRIPT_BLOCK_SELECTOR };
+                }
+            case 'template':
+                return { type: TEMPLATE_BLOCK_SELECTOR };
+            case 'style': {
+                const index = this.descriptor.styles.indexOf(block);
+                if (index >= 0)
+                    return { type: 'style', index };
+                break;
+            }
+            default: {
+                const index = this.descriptor.customBlocks.indexOf(block);
+                if (index >= 0)
+                    return { type: 'customBlocks', index };
+                break;
+            }
+        }
+        return undefined;
+    }
+    getDocumentFileName(selectorLike) {
+        const selector = isString(selectorLike)
+            ? { type: selectorLike }
+            : selectorLike;
+        const id = this.getDocumentId(selector);
+        const ext = getLanguageExtension(this.getDocumentLanguage(selector));
+        return this.fsPath + VIRTUAL_FILENAME_SEPARATOR + id + '.' + ext;
+    }
+    getDocument(selector) {
+        this.parse();
+        if (isString(selector)) {
+            if (selector.includes('/') || selector.includes('\\')) {
+                const result = parseVirtualFileName(selector);
+                if (result == null)
+                    return;
+                selector = result.selector;
+            }
+            else {
+                selector = { type: selector };
+            }
+        }
+        const id = this.getDocumentId(selector);
+        if (!this.documents.has(id)) {
+            switch (selector.type) {
+                case INTERNAL_MODULE_SELECTOR:
+                    this.documents.set(id, this.createInternalModuleDocument());
+                    break;
+                case MODULE_SELECTOR:
+                    this.documents.set(id, this.createModuleDocument());
+                    break;
+                case RENDER_SELECTOR:
+                    this.documents.set(id, this.createRenderDocument());
+                    break;
+                case TEMPLATE_AST_SELECTOR:
+                    this.documents.set(id, this.createTemplateASTDocument());
+                    break;
+                default:
+                    this.documents.set(id, this.createBlockDocument(selector));
+                    break;
+            }
+        }
+        return this.documents.get(id);
+    }
+    createBlockDocument(selector) {
+        const block = this.getBlock(selector);
+        if (block == null)
+            return;
+        const options = {
+            container: this,
+            selector,
+            uri: asUri(this.getDocumentFileName(selector)),
+            languageId: this.getDocumentLanguage(selector),
+            version: this.version,
+            content: block.content,
+        };
+        if (selector.type === SCRIPT_SETUP_BLOCK_SELECTOR) {
+            return createScriptSetupTextDocument({ ...options, selector });
+        }
+        else {
+            return VirtualTextDocument.create(options);
+        }
+    }
+    createInternalModuleDocument() {
+        return createInternalModuleTextDocument({
+            container: this,
+            selector: { type: INTERNAL_MODULE_SELECTOR },
+            uri: asUri(this.getDocumentFileName(INTERNAL_MODULE_SELECTOR)),
+            languageId: this.getDocumentLanguage({ type: INTERNAL_MODULE_SELECTOR }),
+            version: this.version,
+            content: '',
+        });
+    }
+    createModuleDocument() {
+        return createVueModuleTextDocument({
+            container: this,
+            selector: { type: MODULE_SELECTOR },
+            uri: asUri(this.getDocumentFileName(MODULE_SELECTOR)),
+            languageId: this.getDocumentLanguage({ type: MODULE_SELECTOR }),
+            version: this.version,
+            content: '',
+        });
+    }
+    createTemplateASTDocument() {
+        return TransformedBlockTextDocument.create({
+            container: this,
+            sourceSelector: { type: RENDER_SELECTOR },
+            selector: { type: TEMPLATE_AST_SELECTOR },
+            uri: asUri(this.getDocumentFileName(TEMPLATE_AST_SELECTOR)),
+            languageId: this.getDocumentLanguage({ type: TEMPLATE_AST_SELECTOR }),
+            version: this.version,
+            content: '',
+            transformer() {
+                var _a, _b;
+                const code = JSON.stringify((_b = (_a = this.container.getDocument(RENDER_SELECTOR)) === null || _a === void 0 ? void 0 : _a.ast) !== null && _b !== void 0 ? _b : {}, null, 2)
+                    .replace(/"type": 0,/g, (_) => `${_} // Root`)
+                    .replace(/"type": 1,/g, (_) => `${_} // Element`)
+                    .replace(/"type": 2,/g, (_) => `${_} // Text`)
+                    .replace(/"type": 3,/g, (_) => `${_} // Comment`)
+                    .replace(/"type": 4,/g, (_) => `${_} // Expression`)
+                    .replace(/"type": 5,/g, (_) => `${_} // Interpolation`)
+                    .replace(/"type": 6,/g, (_) => `${_} // Attribute`)
+                    .replace(/"type": 7,/g, (_) => `${_} // Directive`);
+                return {
+                    code,
+                };
+            },
+        });
+    }
+    createRenderDocument() {
+        return RenderFunctionTextDocument.create({
+            container: this,
+            selector: { type: RENDER_SELECTOR },
+            uri: asUri(this.getDocumentFileName(RENDER_SELECTOR)),
+            languageId: this.getDocumentLanguage({ type: RENDER_SELECTOR }),
+            version: this.version,
+            content: '',
+        });
+    }
+    getDocumentLanguage(selector) {
+        switch (selector.type) {
+            case INTERNAL_MODULE_SELECTOR:
+            case MODULE_SELECTOR:
+                return 'typescript';
+            case RENDER_SELECTOR:
+                return 'typescriptreact';
+            case TEMPLATE_AST_SELECTOR:
+                return 'jsonc';
+            default:
+                return getBlockLanguage(this.getBlock(selector));
+        }
+    }
+    getDocumentId(selector) {
+        if (isString(selector))
+            return selector;
+        if ('index' in selector)
+            return `${selector.type}__${selector.index}`;
+        return selector.type;
+    }
+    markDirty() {
+        this.isDirty = true;
+        this.all().forEach((doc) => doc.markDirty());
+    }
+    parse() {
+        var _a, _b, _c, _d, _e, _f, _g;
+        if (!this.isDirty)
+            return;
+        this.isDirty = false;
+        const source = this.getText();
+        try {
+            const sfc = parseSFC(source, this.parseOptions);
+            if (this.sfc != null) {
+                const { descriptor: prev } = this.sfc;
+                const { descriptor: next } = sfc;
+                if (((_a = prev.script) === null || _a === void 0 ? void 0 : _a.lang) !== ((_b = next.script) === null || _b === void 0 ? void 0 : _b.lang)) {
+                    this.documents.delete(this.getDocumentId({ type: SCRIPT_BLOCK_SELECTOR }));
+                }
+                if (((_c = prev.scriptSetup) === null || _c === void 0 ? void 0 : _c.lang) !== ((_d = next.scriptSetup) === null || _d === void 0 ? void 0 : _d.lang)) {
+                    this.documents.delete(this.getDocumentId({ type: SCRIPT_SETUP_BLOCK_SELECTOR }));
+                }
+                if (((_e = prev.template) === null || _e === void 0 ? void 0 : _e.lang) !== ((_f = next.template) === null || _f === void 0 ? void 0 : _f.lang)) {
+                    this.documents.delete(this.getDocumentId({ type: TEMPLATE_BLOCK_SELECTOR }));
+                }
+            }
+            this.sfc = sfc;
+        }
+        catch (error) {
+            // -- skip invalid state.
+            console.error(`Error parsing SFC "${this.fsPath}": ${error.message} ${(_g = error.stack) !== null && _g !== void 0 ? _g : ''}`);
+        }
+    }
+    static create(uri, languageId, version, content, options, parseOptions) {
+        return new VueTextDocument(TextDocument.create(uri, languageId, version, content), options, parseOptions);
+    }
+    static update(document, changes, version) {
+        document.doc = TextDocument.update(document.doc, changes, version);
+        document.isDirty = true;
+        document.documents.forEach((document) => {
+            if (document != null)
+                document.markDirty();
+        });
+        return document;
+    }
+}
+function getRelativeFileName(dir, fileName) {
+    const relative = Path.posix.relative(dir, fileName);
+    return relative.startsWith('.') ? relative : `./${relative}`;
+}
+
+export { AsyncDocumentStore, DocumentStore, INTERNAL_MODULE_SELECTOR, MODULE_SELECTOR, RENDER_SELECTOR, RenderFunctionTextDocument, SCRIPT_BLOCK_SELECTOR, SCRIPT_SETUP_BLOCK_SELECTOR, TEMPLATE_AST_SELECTOR, TEMPLATE_BLOCK_SELECTOR, TransformedBlockTextDocument, VIRTUAL_FILENAME_SEPARATOR, VirtualTextDocument, VueTextDocument, asFsPath, asFsUri, asUri, basename, binarySearch, getBlockLanguage, getContainingFile, getLanguageExtension, getLanguageIdFromExtension, isOffsetInBlock, isVirtualFile, isVirtualFileOfType, isVueFile, parseVirtualFileName, relativeVirtualImportPath, replaceSlashes };
+//# sourceMappingURL=index.mjs.map

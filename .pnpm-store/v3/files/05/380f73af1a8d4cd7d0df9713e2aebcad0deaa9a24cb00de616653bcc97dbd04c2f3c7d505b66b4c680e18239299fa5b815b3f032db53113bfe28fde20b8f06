@@ -1,0 +1,66 @@
+"use strict";
+var __importDefault = (this && this.__importDefault) || function (mod) {
+    return (mod && mod.__esModule) ? mod : { "default": mod };
+};
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.start = void 0;
+const debug_1 = __importDefault(require("debug"));
+const vite_1 = require("vite");
+const path_1 = require("path");
+const get_port_1 = __importDefault(require("get-port"));
+const makeCypressPlugin_1 = require("./makeCypressPlugin");
+const debug = debug_1.default('cypress:vite-dev-server:start');
+const resolveServerConfig = async ({ viteConfig, options }) => {
+    const { projectRoot, supportFile } = options.config;
+    const requiredOptions = {
+        base: '/__cypress/src/',
+        root: projectRoot,
+    };
+    const finalConfig = { ...viteConfig, ...requiredOptions };
+    finalConfig.plugins = [...(finalConfig.plugins || []), makeCypressPlugin_1.makeCypressPlugin(projectRoot, supportFile, options.devServerEvents, options.specs)];
+    // This alias is necessary to avoid a "prefixIdentifiers" issue from slots mounting
+    // only cjs compiler-core accepts using prefixIdentifiers in slots which vue test utils use.
+    // Could we resolve this usage in test-utils?
+    try {
+        finalConfig.resolve = finalConfig.resolve || {};
+        finalConfig.resolve.alias = {
+            ...finalConfig.resolve.alias,
+            '@vue/compiler-core': path_1.resolve(path_1.dirname(require.resolve('@vue/compiler-core')), 'dist', 'compiler-core.cjs.js'),
+        };
+    }
+    catch (e) {
+        // Vue 3 is not installed
+    }
+    finalConfig.server = finalConfig.server || {};
+    finalConfig.server.port = await get_port_1.default({ port: finalConfig.server.port || 3000, host: 'localhost' }),
+        // Ask vite to pre-optimize all dependencies of the specs
+        finalConfig.optimizeDeps = finalConfig.optimizeDeps || {};
+    // pre-optimize all the specs
+    if ((options.specs && options.specs.length)) {
+        // fix: we must preserve entries configured on target project
+        const existingOptimizeDepsEntries = finalConfig.optimizeDeps.entries;
+        if (existingOptimizeDepsEntries) {
+            finalConfig.optimizeDeps.entries = [...existingOptimizeDepsEntries, ...options.specs.map((spec) => spec.relative)];
+        }
+        else {
+            finalConfig.optimizeDeps.entries = [...options.specs.map((spec) => spec.relative)];
+        }
+        // only optimize a supportFile is it is not false or undefined
+        if (supportFile) {
+            // fix: on windows we need to replace backslashes with slashes
+            finalConfig.optimizeDeps.entries.push(supportFile.replace(/\\/g, '/'));
+        }
+    }
+    debug(`the resolved server config is ${JSON.stringify(finalConfig, null, 2)}`);
+    return finalConfig;
+};
+async function start(devServerOptions) {
+    if (!devServerOptions.viteConfig) {
+        debug('User did not pass in any Vite dev server configuration');
+        devServerOptions.viteConfig = {};
+    }
+    debug('starting vite dev server');
+    const resolvedConfig = await resolveServerConfig(devServerOptions);
+    return vite_1.createServer(resolvedConfig);
+}
+exports.start = start;

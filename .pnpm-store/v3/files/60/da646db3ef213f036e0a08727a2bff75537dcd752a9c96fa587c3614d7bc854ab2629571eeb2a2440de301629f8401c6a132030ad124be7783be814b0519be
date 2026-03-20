@@ -1,0 +1,45 @@
+{
+  "name": "vite-plugin-istanbul",
+  "version": "2.9.0",
+  "author": "iFaxity (christian@faxity.se)",
+  "license": "MIT",
+  "module": "./dist/index.js",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist/*"
+  ],
+  "scripts": {
+    "prepublishOnly": "npm run build",
+    "build": "tsc"
+  },
+  "homepage": "https://github.com/ifaxity/vite-plugin-istanbul",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ifaxity/vite-plugin-istanbul.git"
+  },
+  "bugs": {
+    "url": "https://github.com/ifaxity/vite-plugin-istanbul/issues"
+  },
+  "keywords": [
+    "vite",
+    "babel",
+    "plugin",
+    "istanbul",
+    "nyc"
+  ],
+  "dependencies": {
+    "@istanbuljs/load-nyc-config": "^1.1.0",
+    "istanbul-lib-instrument": "^5.1.0",
+    "picocolors": "^1.0.0",
+    "test-exclude": "^6.0.0"
+  },
+  "devDependencies": {
+    "@semantic-release/changelog": "^6.0.1",
+    "@semantic-release/git": "^10.0.1",
+    "@types/node": "^17.0.23",
+    "@types/ws": "^8.5.3",
+    "typescript": "^4.6.3",
+    "vite": "^2.9.1"
+  }
+}

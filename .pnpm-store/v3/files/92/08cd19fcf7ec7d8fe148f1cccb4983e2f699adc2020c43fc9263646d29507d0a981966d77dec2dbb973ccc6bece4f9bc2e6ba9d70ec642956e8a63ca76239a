@@ -1,0 +1,608 @@
+'use strict';
+
+Object.defineProperty(exports, '__esModule', { value: true });
+
+const compilerCore_cjs_js = require('@vue/compiler-core/dist/compiler-core.cjs.js');
+
+/**
+ * Checks if it is a valid JavaScript identifers.
+ *
+ * @public
+ */
+function isSimpleIdentifier(content) {
+    return compilerCore_cjs_js.isSimpleIdentifier(content.trim());
+}
+/**
+ * Checks if it is Vue template AST Node.
+ *
+ * @public
+ */
+function isNode(node) {
+    return typeof node === 'object' && node != null && 'type' in node;
+}
+/**
+ * Checks if it is an AST RootNode.
+ *
+ * @public
+ */
+function isRootNode(node) {
+    return isNode(node) && node.type === 0;
+}
+/**
+ * Checks if it is an AST ElementNode.
+ *
+ * @public
+ */
+function isElementNode(node) {
+    return isNode(node) && node.type === 1;
+}
+/**
+ * Checks if it is an AST PlainElementNode.
+ *
+ * @public
+ */
+function isPlainElementNode(node) {
+    return isElementNode(node) && node.tagType === 0;
+}
+/**
+ * Checks if it is an AST ComponentNode.
+ *
+ * @public
+ */
+function isComponentNode(node) {
+    return isElementNode(node) && node.tagType === 1;
+}
+/**
+ * Checks if it is an AST TemplateNode.
+ * @public
+ */
+function isTemplateNode(node) {
+    return isElementNode(node) && node.tagType === 3;
+}
+/**
+ * Checks if it is an AST TextNode.
+ * @public
+ */
+function isTextNode(node) {
+    return isNode(node) && node.type === 2;
+}
+/**
+ * Checks if it is an AST CommentNode.
+ * @public
+ */
+function isCommentNode(node) {
+    return isNode(node) && node.type === 3;
+}
+/**
+ * Checks if it is an AST ExpressionNode.
+ * @public
+ */
+function isSimpleExpressionNode(node) {
+    return isNode(node) && node.type === 4;
+}
+/**
+ * Checks if it is an AST InterpolationNode.
+ * @public
+ */
+function isInterpolationNode(node) {
+    return isNode(node) && node.type === 5;
+}
+/**
+ * Checks if it is an AST AttributeNode.
+ * @public
+ */
+function isAttributeNode(node) {
+    return isNode(node) && node.type === 6;
+}
+/**
+ * Checks if it is an AST DirectiveNode.
+ * @public
+ */
+function isDirectiveNode(node) {
+    return isNode(node) && node.type === 7;
+}
+
+/**
+ * Create AST Node
+ *
+ * @public
+ */
+function createSimpleExpression(content, isStatic, loc, isConstant) {
+    return compilerCore_cjs_js.createSimpleExpression(content, isStatic, loc, isConstant === true ? 0 : undefined);
+}
+
+const VISITOR_KEYS = [
+    ['children'],
+    ['props', 'children'],
+    [],
+    [],
+    [],
+    ['content'],
+    ['value'],
+    ['exp', 'arg'], // DIRECTIVE = 7,
+];
+/**
+ * A general AST traversal utility with both prefix and postfix handlers, and a
+ * state object. Exposes ancestry data to each handler so that more complex
+ * AST data can be taken into account.
+ *
+ * @public
+ */
+function traverse(node, handlers, state) {
+    if (typeof handlers === 'function') {
+        handlers = { enter: handlers };
+    }
+    const { enter, exit } = handlers;
+    traverseSimpleImpl(node, enter, exit, state, []);
+}
+function traverseSimpleImpl(node, enter, exit, state, ancestors) {
+    if (!isNode(node))
+        return;
+    const keys = VISITOR_KEYS[node.type];
+    if (keys == null)
+        return;
+    if (enter != null)
+        enter(node, ancestors, state);
+    for (const key of keys) {
+        const subNode = node[key];
+        if (Array.isArray(subNode)) {
+            for (let i = 0; i < subNode.length; i++) {
+                const child = subNode[i];
+                if (child == null)
+                    continue;
+                ancestors.push({
+                    node,
+                    key,
+                    index: i,
+                });
+                traverseSimpleImpl(child, enter, exit, state, ancestors);
+                ancestors.pop();
+            }
+        }
+        else if (subNode != null) {
+            ancestors.push({
+                node,
+                key,
+            });
+            traverseSimpleImpl(subNode, enter, exit, state, ancestors);
+            ancestors.pop();
+        }
+    }
+    if (exit != null)
+        exit(node, ancestors, state);
+}
+/**
+ * An abortable AST traversal utility. Return false (or falsy value) to stop traversal.
+ *
+ * @public
+ */
+function traverseEvery(node, enter, state, ancestors = []) {
+    if (!isNode(node))
+        return;
+    const keys = VISITOR_KEYS[node.type];
+    if (keys == null)
+        return;
+    if (enter(node, ancestors, state)) {
+        for (const key of keys) {
+            const subNode = node[key];
+            if (Array.isArray(subNode)) {
+                for (let i = 0; i < subNode.length; i++) {
+                    const child = subNode[i];
+                    if (isNode(child)) {
+                        ancestors.push({
+                            node,
+                            key,
+                            index: i,
+                        });
+                        traverseEvery(child, enter, state, ancestors);
+                        ancestors.pop();
+                    }
+                }
+            }
+            else if (isNode(subNode)) {
+                ancestors.push({
+                    node,
+                    key,
+                });
+                traverseEvery(subNode, enter, state, ancestors);
+                ancestors.pop();
+            }
+        }
+    }
+}
+/**
+ * A faster AST traversal utility. It behaves same as [traverse()] but there is no ancestory data.
+ *
+ * @public
+ */
+function traverseFast(node, enter, state) {
+    if (!isNode(node))
+        return;
+    const keys = VISITOR_KEYS[node.type];
+    if (keys == null)
+        return;
+    let isStopped = false;
+    const stop = () => {
+        isStopped = true;
+    };
+    enter(node, state, stop);
+    if (isStopped)
+        return;
+    const forwardEnter = (node, state, prevStop) => {
+        enter(node, state, () => {
+            stop();
+            prevStop();
+        });
+    };
+    for (const key of keys) {
+        const subNode = node[key];
+        if (Array.isArray(subNode)) {
+            for (const node of subNode) {
+                traverseFast(node, forwardEnter, state);
+                if (isStopped)
+                    return;
+            }
+        }
+        else if (isNode(subNode)) {
+            traverseFast(subNode, forwardEnter, state);
+            if (isStopped)
+                return;
+        }
+    }
+}
+
+/**
+ * Find the deepest node containing the given position.
+ *
+ * @public
+ */
+function findTemplateNodeAt(ast, position) {
+    return findTemplateNodeInRange(ast, position, position);
+}
+/**
+ * Find the parent element node.
+ *
+ * @public
+ */
+function findParentNode(ast, node) {
+    let result;
+    traverseEvery(ast, (element) => {
+        if (isElementNode(element)) {
+            if (element.children.includes(node)) {
+                result = element;
+                return false;
+            }
+        }
+        return true;
+    });
+    return result;
+}
+/**
+ * Find a child (element, component, text, interpolation, or comment) node containing the given position.
+ *
+ * @public
+ * @param mode - Open/close range comparison mode:
+ *  • undefined - position in [start, end]
+ *  • 'start'   — position in [start, end)
+ *  • 'end'     - position in (start, end]
+ */
+function findTemplateChildNodeAt(ast, position, mode) {
+    var _a, _b;
+    const result = findTemplateNodeInRange(ast, position, position, mode);
+    while (result.ancestors.length > 0) {
+        if (isRootNode(result.node) ||
+            isElementNode(result.node) ||
+            isTextNode(result.node) ||
+            isInterpolationNode(result.node) ||
+            isCommentNode(result.node)) {
+            break;
+        }
+        result.node = (_b = (_a = result.ancestors.pop()) === null || _a === void 0 ? void 0 : _a.node) !== null && _b !== void 0 ? _b : null;
+    }
+    return result;
+}
+/**
+ * Find the deepest node containing the given position.
+ *
+ * @public
+ * @param mode - Open/close range comparison mode:
+ *  • undefined - position in [start, end]
+ *  • 'start'   — position in [start, end)
+ *  • 'end'     - position in (start, end]
+ */
+function findTemplateNodeInRange(ast, start, end, mode) {
+    const found = {
+        node: null,
+        ancestors: [],
+    };
+    traverseEvery(ast, (node, ancestors) => {
+        if (mode === 'start'
+            ? node.loc.start.offset <= start && end < node.loc.end.offset
+            : mode === 'end'
+                ? node.loc.start.offset < start && end <= node.loc.end.offset
+                : node.loc.start.offset <= start && end <= node.loc.end.offset) {
+            found.node = node;
+            found.ancestors = ancestors.slice();
+            return true;
+        }
+        else {
+            return false;
+        }
+    });
+    return found;
+}
+/**
+ * Get all nodes contained in given range. (partial overlaps are ignored)
+ *
+ * @public
+ */
+function findTemplateNodesInRange(ast, start, end) {
+    const found = [];
+    traverseFast(ast, (node) => {
+        if (node.loc.start.offset <= start && end <= node.loc.end.offset) {
+            found.push(node);
+        }
+    });
+    return found;
+}
+/**
+ * Get all child (element, component, text, interpolation, or comment) nodes contained in given range. (partial overlaps are ignored)
+ *
+ * @public
+ */
+function findTemplateChildrenInRange(ast, start, end) {
+    var _a, _b;
+    if (start === end) {
+        const a = findTemplateChildNodeAt(ast, start);
+        return a.node != null ? [a.node] : [];
+    }
+    const a = findTemplateChildNodeAt(ast, start, 'start');
+    const b = findTemplateChildNodeAt(ast, end, 'end');
+    if (a.node == null || b.node == null)
+        return [];
+    if (a.node === b.node)
+        return [a.node];
+    const pa = (_a = a.ancestors.pop()) === null || _a === void 0 ? void 0 : _a.node;
+    const pb = (_b = b.ancestors.pop()) === null || _b === void 0 ? void 0 : _b.node;
+    if (pa == null || pb == null)
+        return [];
+    if (pa === b.node)
+        return [pa];
+    if (pb === a.node)
+        return [pb];
+    if (pa === pb && isElementNode(pa)) {
+        return pa.children.slice(pa.children.indexOf(a.node), 1 + pa.children.indexOf(b.node));
+    }
+    return [];
+}
+
+const selfClosingTag = [
+    'area',
+    'base',
+    'br',
+    'col',
+    'command',
+    'embed',
+    'hr',
+    'img',
+    'input',
+    'keygen',
+    'link',
+    'meta',
+    'param',
+    'source',
+    'track',
+    'wbr',
+];
+const defaults = {
+    indent: 2,
+    initialIndent: 0,
+    directive: 'shorthand',
+    replaceNodes: new Map(),
+};
+/**
+ * Convert template AST to template code.
+ *
+ * @public
+ */
+function stringify(node, options) {
+    const finalOptions = { ...defaults, ...options };
+    return genNode(Array.isArray(node) ? { type: 0, children: node } : node, finalOptions.initialIndent * finalOptions.initialIndent, finalOptions);
+}
+const shorthands = {
+    bind: ':',
+    on: '@',
+    slot: '#',
+};
+function genNode(node, indent, options) {
+    if (options.replaceNodes.has(node)) {
+        const replaced = options.replaceNodes.get(node);
+        return replaced == null ? '' : genNode(replaced, indent, options);
+    }
+    else if (isRootNode(node)) {
+        return genRootNode(node, indent, options);
+    }
+    else if (isElementNode(node)) {
+        return genElementNode(node, indent, options);
+    }
+    else if (isAttributeNode(node)) {
+        return genAttributeNode(node, indent, options);
+    }
+    else if (isDirectiveNode(node)) {
+        return genDirectiveNode(node, indent, options);
+    }
+    else if (isInterpolationNode(node)) {
+        return `{{ ${genNode(node.content, indent, options)} }}`;
+    }
+    else if (isSimpleExpressionNode(node)) {
+        return genExpressionNode(node, indent, options);
+    }
+    else if (isTextNode(node)) {
+        return genTextNode(node, indent, options);
+    }
+    else if (isCommentNode(node)) {
+        return (' '.repeat(indent) +
+            '<!--' +
+            genMultilineText(node.content, indent, options) +
+            '-->');
+    }
+    else {
+        throw new Error(`Unsupported node type: ${node.type}`);
+    }
+}
+function genExpressionNode(node, indent, options) {
+    return genMultilineText(node.content, indent, options);
+}
+function genTextNode(node, indent, options) {
+    return genMultilineText(node.content, indent, options);
+}
+function genMultilineText(content, indent, options) {
+    if (content.startsWith('\n')) {
+        content = content.trimStart();
+    }
+    if (content.includes('\n')) {
+        content = content
+            .split('\n')
+            .map((line) => line.trim())
+            .join('\n' + ' '.repeat(indent + options.indent));
+    }
+    return content;
+}
+function genRootNode(node, indent, options) {
+    return genChildren(node, indent, options);
+}
+function genElementNode(node, indent, options) {
+    const code = [];
+    code.push(' '.repeat(indent), '<', node.tag);
+    let shouldIndentClosing = false;
+    const props = applyReplaceNodes(node.props, options);
+    if (props.length > 0) {
+        if (props.length > 2) {
+            code.push('\n');
+            node.props.forEach((prop) => {
+                code.push(' '.repeat(indent + options.indent));
+                code.push(genNode(prop, indent + options.indent, options));
+                code.push('\n');
+            });
+            shouldIndentClosing = true;
+        }
+        else {
+            props.forEach((prop) => {
+                code.push(' ');
+                code.push(genNode(prop, indent, options));
+            });
+        }
+    }
+    if (shouldIndentClosing)
+        code.push(' '.repeat(indent));
+    if (node.isSelfClosing) {
+        if (!shouldIndentClosing)
+            code.push(' ');
+        code.push('/>');
+    }
+    else {
+        if (selfClosingTag.find((k) => k === node.tag) != null) {
+            code.push(' ', '/>');
+        }
+        else {
+            code.push('>', genChildren(node, indent, options), '</', node.tag, '>');
+        }
+    }
+    return code.join('');
+}
+function genChildren(node, indent, options) {
+    const code = [];
+    const children = applyReplaceNodes(node.children, options);
+    if (children.length > 0) {
+        const hasOnlyInlineChildren = children.every((child) => !isElementNode(child));
+        if (hasOnlyInlineChildren) {
+            children.forEach((child) => {
+                code.push(genNode(child, indent + options.indent, options));
+            });
+        }
+        else {
+            let wasLastChildInline = true;
+            children.forEach((child) => {
+                if (isTextNode(child) && child.content.trim() === '')
+                    return; // Ignore empty text nodes.
+                const isThisChildInline = !isElementNode(child);
+                if (wasLastChildInline && isThisChildInline) ;
+                else if (wasLastChildInline) {
+                    code.push('\n');
+                }
+                else if (isThisChildInline) {
+                    code.push('\n', ' '.repeat(indent + options.indent));
+                }
+                else {
+                    code.push('\n');
+                }
+                code.push(genNode(child, indent + options.indent, options));
+                wasLastChildInline = isThisChildInline;
+            });
+            code.push('\n', ' '.repeat(indent));
+        }
+    }
+    return code.join('');
+}
+function applyReplaceNodes(nodes, options) {
+    return nodes
+        .map((node) => {
+        if (options.replaceNodes.has(node))
+            return options.replaceNodes.get(node);
+        return node;
+    })
+        .filter(Boolean);
+}
+function genDirectiveNode(node, indent, options) {
+    const code = [];
+    if (options.directive === 'shorthand' && node.name in shorthands) {
+        code.push(shorthands[node.name]);
+    }
+    else {
+        code.push(`v-${node.name}`);
+        if (node.arg != null)
+            code.push(':');
+    }
+    if (isSimpleExpressionNode(node.arg)) {
+        if (node.arg.isStatic)
+            code.push(genNode(node.arg, indent, options));
+        else
+            code.push('[', genNode(node.arg, indent, options), ']');
+    }
+    node.modifiers.forEach((modifier) => code.push('.', modifier));
+    if (isSimpleExpressionNode(node.exp)) {
+        code.push('="', genNode(node.exp, indent, options), '"');
+    }
+    return code.join('');
+}
+function genAttributeNode(node, indent, options) {
+    return node.value != null
+        ? `${node.name}="${genNode(node.value, indent, options)}"`
+        : node.name;
+}
+
+exports.createSimpleExpression = createSimpleExpression;
+exports.findParentNode = findParentNode;
+exports.findTemplateChildNodeAt = findTemplateChildNodeAt;
+exports.findTemplateChildrenInRange = findTemplateChildrenInRange;
+exports.findTemplateNodeAt = findTemplateNodeAt;
+exports.findTemplateNodeInRange = findTemplateNodeInRange;
+exports.findTemplateNodesInRange = findTemplateNodesInRange;
+exports.isAttributeNode = isAttributeNode;
+exports.isCommentNode = isCommentNode;
+exports.isComponentNode = isComponentNode;
+exports.isDirectiveNode = isDirectiveNode;
+exports.isElementNode = isElementNode;
+exports.isInterpolationNode = isInterpolationNode;
+exports.isNode = isNode;
+exports.isPlainElementNode = isPlainElementNode;
+exports.isRootNode = isRootNode;
+exports.isSimpleExpressionNode = isSimpleExpressionNode;
+exports.isSimpleIdentifier = isSimpleIdentifier;
+exports.isTemplateNode = isTemplateNode;
+exports.isTextNode = isTextNode;
+exports.stringify = stringify;
+exports.traverse = traverse;
+exports.traverseEvery = traverseEvery;
+exports.traverseFast = traverseFast;
+//# sourceMappingURL=index.js.map

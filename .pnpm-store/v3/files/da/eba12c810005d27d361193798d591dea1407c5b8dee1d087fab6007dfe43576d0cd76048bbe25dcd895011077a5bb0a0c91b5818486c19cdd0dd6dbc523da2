@@ -1,0 +1,17 @@
+import type * as ts from 'typescript/lib/tsserverlibrary';
+export declare type LanguageServiceHost = ts.LanguageServiceHost & {
+    getVueCompilationSettings(): VueCompilerOptions;
+};
+export interface ITemplateScriptData {
+    projectVersion: string | undefined;
+    components: string[];
+    componentItems: ts.CompletionEntry[];
+}
+export interface VueCompilerOptions {
+    experimentalCompatMode?: 2 | 3;
+    experimentalShamefullySupportOptionsApi?: boolean;
+    experimentalTemplateCompilerOptions?: any;
+    experimentalTemplateCompilerOptionsRequirePath?: string;
+    experimentalDisableTemplateSupport?: boolean;
+    experimentalResolveStyleCssClasses?: 'scoped' | 'always' | 'never';
+}

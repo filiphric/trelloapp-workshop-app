@@ -1,0 +1,17 @@
+#!/bin/sh
+basedir=$(dirname "$(echo "$0" | sed -e 's,\\,/,g')")
+
+case `uname` in
+    *CYGWIN*) basedir=`cygpath -w "$basedir"`;;
+esac
+
+if [ -z "$NODE_PATH" ]; then
+  export NODE_PATH="/root/trelloapp-vue-vite-ts/node_modules/.pnpm/cypress@10.4.0/node_modules/cypress/bin/node_modules:/root/trelloapp-vue-vite-ts/node_modules/.pnpm/cypress@10.4.0/node_modules/cypress/node_modules:/root/trelloapp-vue-vite-ts/node_modules/.pnpm/cypress@10.4.0/node_modules:/root/trelloapp-vue-vite-ts/node_modules/.pnpm/node_modules"
+else
+  export NODE_PATH="/root/trelloapp-vue-vite-ts/node_modules/.pnpm/cypress@10.4.0/node_modules/cypress/bin/node_modules:/root/trelloapp-vue-vite-ts/node_modules/.pnpm/cypress@10.4.0/node_modules/cypress/node_modules:/root/trelloapp-vue-vite-ts/node_modules/.pnpm/cypress@10.4.0/node_modules:/root/trelloapp-vue-vite-ts/node_modules/.pnpm/node_modules:$NODE_PATH"
+fi
+if [ -x "$basedir/node" ]; then
+  exec "$basedir/node"  "$basedir/../../bin/cypress" "$@"
+else
+  exec node  "$basedir/../../bin/cypress" "$@"
+fi

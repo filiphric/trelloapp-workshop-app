@@ -1,0 +1,41 @@
+{
+	"name": "@vuedx/template-ast-types",
+	"version": "0.7.2",
+	"description": "Helper functions for Vue template AST",
+	"main": "lib/index.js",
+	"module": "lib/index.mjs",
+	"types": "lib/index.d.ts",
+	"publishConfig": {
+		"types": "lib/index.d.ts"
+	},
+	"files": [
+		"lib"
+	],
+	"keywords": [
+		"ast",
+		"ast-helpers",
+		"vue",
+		"vue-compiler",
+		"vue-template-compiler"
+	],
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/znck/vue-developer-experience.git"
+	},
+	"author": "Rahul Kadyan <rahulkdn@gmail.com> (https://znck.me/)",
+	"funding": {
+		"type": "individual",
+		"url": "https://github.com/sponsors/znck"
+	},
+	"license": "MIT",
+	"bugs": {
+		"url": "https://github.com/znck/vue-developer-experience/issues"
+	},
+	"homepage": "https://github.com/znck/vue-developer-experience#readme",
+	"dependencies": {
+		"@vue/compiler-core": "^3.0.0"
+	},
+	"devDependencies": {
+		"typescript": "^4.0.3"
+	}
+}

@@ -1,0 +1,302 @@
+'use strict';
+
+Object.defineProperty(exports, '__esModule', { value: true });
+
+const LRUCache$1 = require('lru-cache');
+const sourceMap = require('source-map');
+const compilerCore = require('@vue/compiler-core/dist/compiler-core.cjs.js');
+
+function _interopDefaultLegacy (e) { return e && typeof e === 'object' && 'default' in e ? e : { 'default': e }; }
+
+function _interopNamespace(e) {
+  if (e && e.__esModule) return e;
+  var n = Object.create(null);
+  if (e) {
+    Object.keys(e).forEach(function (k) {
+      if (k !== 'default') {
+        var d = Object.getOwnPropertyDescriptor(e, k);
+        Object.defineProperty(n, k, d.get ? d : {
+          enumerable: true,
+          get: function () {
+            return e[k];
+          }
+        });
+      }
+    });
+  }
+  n['default'] = e;
+  return Object.freeze(n);
+}
+
+const LRUCache$1__default = /*#__PURE__*/_interopDefaultLegacy(LRUCache$1);
+const sourceMap__namespace = /*#__PURE__*/_interopNamespace(sourceMap);
+const compilerCore__namespace = /*#__PURE__*/_interopNamespace(compilerCore);
+
+const cssVarRE = /\bv-bind\(\s*(?:'([^']+)'|"([^"]+)"|([^'"][^)]*))\s*\)/g;
+function parseCssVars(sfc) {
+    const vars = [];
+    sfc.styles.forEach(style => {
+        let match;
+        while ((match = cssVarRE.exec(style.content))) {
+            vars.push(match[1] || match[2] || match[3]);
+        }
+    });
+    return vars;
+}
+
+const hasWarned = {};
+function warnOnce(msg) {
+    const isNodeProd = typeof process !== 'undefined' && process.env.NODE_ENV === 'production';
+    if (!isNodeProd && !false && !hasWarned[msg]) {
+        hasWarned[msg] = true;
+        warn(msg);
+    }
+}
+function warn(msg) {
+    console.warn(`\x1b[1m\x1b[33m[@vue/compiler-sfc]\x1b[0m\x1b[33m ${msg}\x1b[0m\n`);
+}
+function warnExperimental(feature, rfcId) {
+    // eslint-disable-next-line
+    if (typeof window !== 'undefined') {
+        return;
+    }
+    warnOnce(`${feature} is still an experimental proposal.\n` +
+        `Follow its status at https://github.com/vuejs/rfcs/pull/${rfcId}.`);
+    warnOnce(`When using experimental features,\n` +
+        `it is recommended to pin your vue dependencies to exact versions to avoid breakage.`);
+}
+
+const SFC_CACHE_MAX_SIZE = 500;
+const sourceToSFC = new (LRUCache$1__default['default'])(SFC_CACHE_MAX_SIZE);
+function parse(source, { sourceMap = true, filename = 'anonymous.vue', sourceRoot = '', pad = false,  compiler = { parse: compilerCore__namespace.baseParse }  } = {}) {
+    const sourceKey = source + sourceMap + filename + sourceRoot + pad + compiler.parse;
+    const cache = sourceToSFC.get(sourceKey);
+    if (cache) {
+        return cache;
+    }
+    const descriptor = {
+        filename,
+        source,
+        template: null,
+        script: null,
+        scriptSetup: null,
+        styles: [],
+        customBlocks: [],
+        cssVars: [],
+        slotted: false
+    };
+    const errors = [];
+    const ast = compiler.parse(source, {
+        // there are no components at SFC parsing level
+        isNativeTag: () => true,
+        // preserve all whitespaces
+        isPreTag: () => true,
+        getTextMode: ({ tag, props }, parent) => {
+            // all top level elements except <template> are parsed as raw text
+            // containers
+            if ((!parent && tag !== 'template') ||
+                // <template lang="xxx"> should also be treated as raw text
+                (tag === 'template' &&
+                    props.some(p => p.type === 6 /* ATTRIBUTE */ &&
+                        p.name === 'lang' &&
+                        p.value &&
+                        p.value.content &&
+                        p.value.content !== 'html'))) {
+                return 2 /* RAWTEXT */;
+            }
+            else {
+                return 0 /* DATA */;
+            }
+        },
+        onError: e => {
+            errors.push(e);
+        }
+    });
+    ast.children.forEach(node => {
+        if (node.type !== 1 /* ELEMENT */) {
+            return;
+        }
+        if (!node.children.length && !hasSrc(node) && node.tag !== 'template') {
+            return;
+        }
+        switch (node.tag) {
+            case 'template':
+                if (!descriptor.template) {
+                    const templateBlock = (descriptor.template = createBlock(node, source, false));
+                    templateBlock.ast = node;
+                }
+                else {
+                    errors.push(createDuplicateBlockError(node));
+                }
+                break;
+            case 'script':
+                const scriptBlock = createBlock(node, source, pad);
+                const isSetup = !!scriptBlock.attrs.setup;
+                if (isSetup && !descriptor.scriptSetup) {
+                    descriptor.scriptSetup = scriptBlock;
+                    break;
+                }
+                if (!isSetup && !descriptor.script) {
+                    descriptor.script = scriptBlock;
+                    break;
+                }
+                errors.push(createDuplicateBlockError(node, isSetup));
+                break;
+            case 'style':
+                const styleBlock = createBlock(node, source, pad);
+                if (styleBlock.attrs.vars) {
+                    errors.push(new SyntaxError(`<style vars> has been replaced by a new proposal: ` +
+                        `https://github.com/vuejs/rfcs/pull/231`));
+                }
+                descriptor.styles.push(styleBlock);
+                break;
+            default:
+                descriptor.customBlocks.push(createBlock(node, source, pad));
+                break;
+        }
+    });
+    if (descriptor.scriptSetup) {
+        if (descriptor.scriptSetup.src) {
+            errors.push(new SyntaxError(`<script setup> cannot use the "src" attribute because ` +
+                `its syntax will be ambiguous outside of the component.`));
+            descriptor.scriptSetup = null;
+        }
+        if (descriptor.script && descriptor.script.src) {
+            errors.push(new SyntaxError(`<script> cannot use the "src" attribute when <script setup> is ` +
+                `also present because they must be processed together.`));
+            descriptor.script = null;
+        }
+    }
+    if (sourceMap) {
+        const genMap = (block) => {
+            if (block && !block.src) {
+                block.map = generateSourceMap(filename, source, block.content, sourceRoot, !pad || block.type === 'template' ? block.loc.start.line - 1 : 0);
+            }
+        };
+        genMap(descriptor.template);
+        genMap(descriptor.script);
+        descriptor.styles.forEach(genMap);
+        descriptor.customBlocks.forEach(genMap);
+    }
+    // parse CSS vars
+    descriptor.cssVars = parseCssVars(descriptor);
+    if (descriptor.cssVars.length) {
+        warnExperimental(`v-bind() CSS variable injection`, 231);
+    }
+    // check if the SFC uses :slotted
+    const slottedRE = /(?:::v-|:)slotted\(/;
+    descriptor.slotted = descriptor.styles.some(s => s.scoped && slottedRE.test(s.content));
+    const result = {
+        descriptor,
+        errors
+    };
+    sourceToSFC.set(sourceKey, result);
+    return result;
+}
+function createDuplicateBlockError(node, isScriptSetup = false) {
+    const err = new SyntaxError(`Single file component can contain only one <${node.tag}${isScriptSetup ? ` setup` : ``}> element`);
+    err.loc = node.loc;
+    return err;
+}
+function createBlock(node, source, pad) {
+    const type = node.tag;
+    let { start, end } = node.loc;
+    let content = '';
+    if (node.children.length) {
+        start = node.children[0].loc.start;
+        end = node.children[node.children.length - 1].loc.end;
+        content = source.slice(start.offset, end.offset);
+    }
+    const loc = {
+        source: content,
+        start,
+        end
+    };
+    const attrs = {};
+    const block = {
+        type,
+        content,
+        loc,
+        attrs
+    };
+    if (pad) {
+        block.content = padContent(source, block, pad) + block.content;
+    }
+    node.props.forEach(p => {
+        if (p.type === 6 /* ATTRIBUTE */) {
+            attrs[p.name] = p.value ? p.value.content || true : true;
+            if (p.name === 'lang') {
+                block.lang = p.value && p.value.content;
+            }
+            else if (p.name === 'src') {
+                block.src = p.value && p.value.content;
+            }
+            else if (type === 'style') {
+                if (p.name === 'scoped') {
+                    block.scoped = true;
+                }
+                else if (p.name === 'module') {
+                    block.module = attrs[p.name];
+                }
+            }
+            else if (type === 'script' && p.name === 'setup') {
+                block.setup = attrs.setup;
+            }
+        }
+    });
+    return block;
+}
+const splitRE = /\r?\n/g;
+const emptyRE = /^(?:\/\/)?\s*$/;
+const replaceRE = /./g;
+function generateSourceMap(filename, source, generated, sourceRoot, lineOffset) {
+    const map = new sourceMap__namespace.SourceMapGenerator({
+        file: filename.replace(/\\/g, '/'),
+        sourceRoot: sourceRoot.replace(/\\/g, '/')
+    });
+    map.setSourceContent(filename, source);
+    generated.split(splitRE).forEach((line, index) => {
+        if (!emptyRE.test(line)) {
+            const originalLine = index + 1 + lineOffset;
+            const generatedLine = index + 1;
+            for (let i = 0; i < line.length; i++) {
+                if (!/\s/.test(line[i])) {
+                    map.addMapping({
+                        source: filename,
+                        original: {
+                            line: originalLine,
+                            column: i
+                        },
+                        generated: {
+                            line: generatedLine,
+                            column: i
+                        }
+                    });
+                }
+            }
+        }
+    });
+    return JSON.parse(map.toString());
+}
+function padContent(content, block, pad) {
+    content = content.slice(0, block.loc.start.offset);
+    if (pad === 'space') {
+        return content.replace(replaceRE, ' ');
+    }
+    else {
+        const offset = content.split(splitRE).length;
+        const padChar = block.type === 'script' && !block.lang ? '//\n' : '\n';
+        return Array(offset).join(padChar);
+    }
+}
+function hasSrc(node) {
+    return node.props.some(p => {
+        if (p.type !== 6 /* ATTRIBUTE */) {
+            return false;
+        }
+        return p.name === 'src';
+    });
+}
+
+exports.parse = parse;
+//# sourceMappingURL=index.js.map

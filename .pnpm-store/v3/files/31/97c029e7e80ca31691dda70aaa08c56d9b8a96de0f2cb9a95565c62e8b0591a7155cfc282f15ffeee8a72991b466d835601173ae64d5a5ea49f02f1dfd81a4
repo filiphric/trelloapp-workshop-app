@@ -1,0 +1,24 @@
+{
+  "name": "eslint-html-parser",
+  "version": "1.0.1",
+  "description": "Parser for ESLint that parses HTML files into AST structures and falls back to an ECMAScript parser for .js files",
+  "repository": "https://github.com/medicomp/eslint-html-parser",
+  "license": "MIT",
+  "author": {
+    "name": "Medicomp Systems",
+    "email": "support@medicomp.com"
+  },
+  "dependencies": {
+    "eslint": "^5.3.0",
+    "espree": "^4.0.0",
+    "htmlparser2": "^3.9.2"
+  },
+  "devDependencies": {
+    "@types/eslint": "^4.16.3",
+    "@types/eslint-scope": "^3.7.0",
+    "@types/estree": "^0.0.39",
+    "@types/htmlparser2": "^3.7.31",
+    "@types/node": "^8.0.14",
+    "typescript": "^3.0.1"
+  }
+}

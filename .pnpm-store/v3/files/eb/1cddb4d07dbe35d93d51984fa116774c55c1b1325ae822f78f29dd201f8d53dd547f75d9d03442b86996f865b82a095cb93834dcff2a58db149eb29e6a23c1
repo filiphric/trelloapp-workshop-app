@@ -1,0 +1,174 @@
+@import "variables";
+@import "components/DatepickerInput";
+@import "components/DatepickerMenu";
+@import "components/Calendar";
+@import "components/MonthYearInput";
+@import "components/SelectionGrid";
+@import "components/TimeInput";
+@import "components/ActionRow";
+
+.dp__theme_dark {
+  --dp-background-color: #212121;
+  --dp-text-color: #fff;
+  --dp-hover-color: #484848;
+  --dp-hover-text-color: #fff;
+  --dp-hover-icon-color: #959595;
+  --dp-primary-color: #005cb2;
+  --dp-primary-disabled-color: #61a8ea;
+  --dp-primary-text-color: #fff;
+  --dp-secondary-color: #a9a9a9;
+  --dp-border-color: #2d2d2d;
+  --dp-menu-border-color: #2d2d2d;
+  --dp-border-color-hover: #aaaeb7;
+  --dp-disabled-color: #737373;
+  --dp-disabled-color-text: #d0d0d0;
+  --dp-scroll-bar-background: #212121;
+  --dp-scroll-bar-color: #484848;
+  --dp-success-color: #00701a;
+  --dp-success-color-disabled: #428f59;
+  --dp-icon-color: #959595;
+  --dp-danger-color: #e53935;
+  --dp-marker-color: #e53935;
+  --dp-tooltip-color: #3e3e3e;
+}
+
+.dp__theme_light {
+  --dp-background-color: #fff;
+  --dp-text-color: #212121;
+  --dp-hover-color: #f3f3f3;
+  --dp-hover-text-color: #212121;
+  --dp-hover-icon-color: #959595;
+  --dp-primary-color: #1976d2;
+  --dp-primary-disabled-color: #6bacea;
+  --dp-primary-text-color: #f8f5f5;
+  --dp-secondary-color: #c0c4cc;
+  --dp-border-color: #ddd;
+  --dp-menu-border-color: #ddd;
+  --dp-border-color-hover: #aaaeb7;
+  --dp-disabled-color: #f6f6f6;
+  --dp-scroll-bar-background: #f3f3f3;
+  --dp-scroll-bar-color: #959595;
+  --dp-success-color: #76d275;
+  --dp-success-color-disabled: #a3d9b1;
+  --dp-icon-color: #959595;
+  --dp-danger-color: #ff6f60;
+  --dp-marker-color: #ff6f60;
+  --dp-tooltip-color: #fafafa;
+  --dp-disabled-color-text: #8e8e8e;
+}
+
+.dp__main {
+  font-family: $dp__font_family;
+  user-select: none;
+  box-sizing: border-box;
+}
+
+.dp__pointer {
+  cursor: pointer;
+}
+
+// Allow control of color property on icons
+.dp__icon {
+  stroke: currentcolor;
+  fill: currentcolor;
+}
+
+// Div style that is displayed on the bottom of the menu for switching layouts
+.dp__button {
+  width: 100%;
+  text-align: center;
+  color: var(--dp-icon-color);
+  background: var(--dp-background-color);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  align-content: center;
+  justify-content: center;
+  padding: $dp__common_padding;
+  box-sizing: border-box;
+  height: $dp__button_height;
+
+  &:hover {
+    background: var(--dp-hover-color);
+    color: var(--dp-hover-icon-color);
+  }
+
+  svg {
+    height: $dp__button_icon_height;
+    width: auto;
+  }
+}
+
+.dp__button_bottom {
+  border-bottom-left-radius: $dp__border_radius;
+  border-bottom-right-radius: $dp__border_radius;
+}
+
+.dp__flex_display {
+  display: flex;
+}
+
+.dp__flex_display_with_input {
+  flex-direction: column;
+  align-items: start;
+}
+
+.dp__relative {
+  position: relative;
+}
+
+.calendar-next-enter-active,
+.calendar-next-leave-active,
+.calendar-prev-enter-active,
+.calendar-prev-leave-active, {
+  transition: all $dp__transition_duration ease-out;
+}
+
+.calendar-next-enter-from {
+  opacity: 0;
+  transform: translateX($dp__transition_length);
+}
+
+.calendar-next-leave-to {
+  opacity: 0;
+  transform: translateX(-$dp__transition_length);
+}
+
+.calendar-prev-enter-from {
+  opacity: 0;
+  transform: translateX(-$dp__transition_length);
+}
+
+.calendar-prev-leave-to {
+  opacity: 0;
+  transform: translateX($dp__transition_length);
+}
+
+.dp-menu-appear-enter-active,
+.dp-menu-appear-leave-active,
+.dp-slide-up-enter-active,
+.dp-slide-up-leave-active,
+.dp-slide-down-enter-active,
+.dp-slide-down-leave-active {
+  transition: all 0.1s ease-out;
+}
+
+.dp-slide-down-leave-to,
+.dp-slide-up-enter-from {
+  opacity: 0;
+  transform: translateY($dp__transition_length);
+}
+
+.dp-slide-down-enter-from,
+.dp-slide-up-leave-to {
+  opacity: 0;
+  transform: translateY(-$dp__transition_length);
+}
+
+.dp-menu-appear-enter-from {
+  opacity: 0;
+}
+
+.dp-menu-appear-leave-to {
+  opacity: 1;
+}

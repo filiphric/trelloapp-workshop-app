@@ -1,0 +1,1 @@
+import{createDecorator as t}from"vue-class-component";export default function(o){return t((function(t,e){!function(t,o,e){t.methods&&Object.prototype.hasOwnProperty.call(t.methods,e)&&(t.sockets=t.sockets||{},t.sockets[o]=t.methods[e])}(t,o&&"string"==typeof o?o:e,e)}))}

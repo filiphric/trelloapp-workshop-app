@@ -1,0 +1,285 @@
+import * as Path from 'path';
+import * as Sentry from '@sentry/node';
+import { machineSync } from 'node-unique-machine-id';
+import { platform } from 'os';
+import { inspect } from 'util';
+
+/**
+ * Loose non-null (non-undefined) filter.
+ * This method can be used as predicate for Array methods.
+ */
+function isNotNull(value) {
+    return value != null;
+}
+
+function isArray(value) {
+    return Array.isArray(value);
+}
+function first(items) {
+    if (items.length === 0)
+        throw new Error('IndexOutOfBounds');
+    // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+    return items[0];
+}
+function last(items, nth = 1) {
+    const index = items.length - nth;
+    if (index < 0 || index >= items.length)
+        throw new Error('IndexOutOfBounds');
+    // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+    return items[index];
+}
+function findPrevSibling(items, item) {
+    const index = items.indexOf(item);
+    if (index > 0)
+        return items[index - 1];
+    return undefined;
+}
+function findNextSibling(items, item) {
+    const index = items.indexOf(item);
+    if (index >= 0)
+        return items[index + 1];
+    return undefined;
+}
+function concat(a, b) {
+    const c = [];
+    if (isArray(a))
+        c.push(...a);
+    if (isArray(b))
+        c.push(...b);
+    return c;
+}
+function flatten(array, depth = 1) {
+    const items = [];
+    array.forEach((item) => {
+        if (Array.isArray(item)) {
+            if (depth > 0)
+                items.push(...flatten(item, depth - 1));
+            else
+                items.push(...item);
+        }
+        else {
+            items.push(item);
+        }
+    });
+    return items;
+}
+
+function isString(value) {
+    return typeof value === 'string';
+}
+const cacheStringFunction = (fn) => {
+    const cache = Object.create(null);
+    return ((str) => {
+        const hit = cache[str];
+        return hit !== null && hit !== void 0 ? hit : (cache[str] = fn(str));
+    });
+};
+const camelizeRE = /[^A-Za-z0-9]+([A-Za-z0-9])/g;
+const camelize = cacheStringFunction((str) => {
+    return uncapitalize(str.replace(camelizeRE, (_, c) => typeof c === 'string' ? c.toUpperCase() : ''));
+});
+const camelCase = camelize;
+const hyphenateRE = /\B([A-Z])/g;
+const hyphenate = cacheStringFunction((str) => {
+    return camelize(str).replace(hyphenateRE, '-$1').toLowerCase();
+});
+const capitalize = cacheStringFunction((str) => {
+    return str.charAt(0).toUpperCase() + str.slice(1);
+});
+const uncapitalize = cacheStringFunction((str) => {
+    return str.charAt(0).toLowerCase() + str.slice(1);
+});
+const pascalCase = cacheStringFunction((str) => capitalize(camelize(str)));
+const kebabCase = hyphenate;
+function isKebabCase(str) {
+    return str.includes('-');
+}
+function isPascalCase(str) {
+    return /^[A-Z][A-Za-z0-9]*$/.test(str);
+}
+function isCamelCase(str) {
+    return /^[a-z][A-Za-z0-9]*$/.test(str);
+}
+
+function getComponentName(fileName) {
+    return pascalCase(Path.posix.basename(fileName).replace(/\.(vue|ts|tsx|js|jsx)$/, ''));
+}
+function getComponentNameAliases(fileNameOrComponentName) {
+    const name = Path.posix
+        .basename(fileNameOrComponentName)
+        .replace(/\.(vue|ts|tsx|js|jsx)$/, '');
+    return isKebabCase(name)
+        ? [kebabCase(name)]
+        : [kebabCase(name), pascalCase(name)];
+}
+
+function isNumber(value) {
+    return typeof value === 'number' && !Number.isNaN(value);
+}
+
+function getRelativeFileName(importingFileName, importedFileName) {
+    if (Path.posix.isAbsolute(importingFileName) &&
+        Path.posix.isAbsolute(importedFileName)) {
+        const fileName = Path.posix.relative(Path.posix.dirname(importingFileName), importedFileName);
+        return fileName.startsWith('.') ? fileName : `./${fileName}`;
+    }
+    return importedFileName;
+}
+
+class Telemetry {
+    constructor(key, options, defaults) {
+        var _a, _b;
+        this.user = {
+            id: this.getUserId(),
+        };
+        this.isTelemetryEnabled = ((_a = process.env['VUEDX_TELEMETRY']) === null || _a === void 0 ? void 0 : _a.toLowerCase()) === 'on' ||
+            ((_b = process.env['VUEDX_TELEMETRY']) === null || _b === void 0 ? void 0 : _b.toLowerCase()) === 'true' ||
+            false;
+        Sentry.init({
+            dsn: key,
+            defaultIntegrations: false,
+            release: options.release,
+            environment: options.environment,
+            sampleRate: options.tracesSampleRate,
+        });
+        this.defaults = {
+            sessionId: Number(Math.random() * 1000000).toString(16),
+            nodeVersion: process.version,
+            os: platform(),
+            ...defaults,
+        };
+    }
+    getUserId() {
+        try {
+            return machineSync(false, true);
+        }
+        catch {
+            return '';
+        }
+    }
+    trace(name, description) {
+        var _a;
+        if (!this.isTelemetryEnabled)
+            return () => { };
+        const activeTransaction = (_a = Sentry.getCurrentHub()
+            .getScope()) === null || _a === void 0 ? void 0 : _a.getTransaction();
+        if (activeTransaction == null) {
+            const transaction = Sentry.startTransaction({
+                name,
+                description,
+            });
+            Sentry.configureScope((s) => {
+                const scope = s;
+                scope.setSpan(transaction);
+            });
+            return () => {
+                Sentry.captureMessage(`[trace] ${name}`, (s) => {
+                    const scope = s;
+                    scope.setSpan(transaction);
+                    scope.setUser(this.user);
+                    scope.setTags({ ...this.defaults });
+                    scope.setLevel(Sentry.Severity.Info);
+                    return scope;
+                });
+                transaction.finish();
+                Sentry.configureScope((s) => {
+                    const scope = s;
+                    scope.setSpan(undefined);
+                });
+            };
+        }
+        else {
+            const child = activeTransaction.startChild({
+                op: name,
+                description,
+            });
+            return () => {
+                child.finish();
+            };
+        }
+    }
+    collect(key, value) {
+        if (!this.isTelemetryEnabled)
+            return;
+        const tags = {};
+        const allowed = new Set(['string', 'number', 'boolean']);
+        Object.entries(value).forEach(([key, value]) => {
+            if (allowed.has(typeof value)) {
+                tags[`data_${key}`] = value;
+            }
+        });
+        Sentry.captureEvent({
+            message: `${key}`,
+            level: Sentry.Severity.Info,
+            user: this.user,
+            tags: {
+                ...this.defaults,
+                ...tags,
+            },
+            extra: value,
+        });
+    }
+    error(payload) {
+        if (!this.isTelemetryEnabled)
+            return;
+        if (!(payload instanceof Error)) {
+            payload = new Error(inspect(payload, true, 3, false));
+        }
+        void Sentry.captureException(payload, {
+            level: Sentry.Severity.Fatal,
+            user: this.user,
+            tags: {
+                ...this.defaults,
+            },
+        });
+    }
+    static get instance() {
+        if (this._instance == null) {
+            throw new Error('Use "Telemetry.setup()" to instantiate telemetry client.');
+        }
+        return this._instance;
+    }
+    static setup(key, packageName, packageVersion, tracesSampleRate, defaults) {
+        this._instance = new Telemetry(key, {
+            release: packageVersion,
+            environment: packageVersion.includes('-') ? 'insiders' : 'production',
+            tracesSampleRate,
+        }, {
+            ...defaults,
+            packageName,
+        });
+    }
+    static extend(defaults) {
+        Object.assign(this.instance.defaults, defaults);
+    }
+    static optOut() {
+        if (this._instance != null) {
+            this._instance.isTelemetryEnabled = false;
+        }
+    }
+}
+async function tracePromise(event, promise) {
+    const done = trace(event);
+    try {
+        return await promise;
+    }
+    catch (error) {
+        collectError(error);
+        throw error;
+    }
+    finally {
+        done();
+    }
+}
+function trace(event, description) {
+    return Telemetry.instance.trace(event, description);
+}
+function collectError(error) {
+    return Telemetry.instance.error(error);
+}
+function collect(key, value) {
+    return Telemetry.instance.collect(key, value);
+}
+
+export { Telemetry, camelCase, camelize, capitalize, collect, collectError, concat, findNextSibling, findPrevSibling, first, flatten, getComponentName, getComponentNameAliases, getRelativeFileName, hyphenate, isArray, isCamelCase, isKebabCase, isNotNull, isNumber, isPascalCase, isString, kebabCase, last, pascalCase, trace, tracePromise, uncapitalize };
+//# sourceMappingURL=index.mjs.map

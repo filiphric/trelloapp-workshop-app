@@ -1,0 +1,59 @@
+/// <reference types="webpack-dev-server" />
+/// <reference types="webpack-dev-server-3" />
+/// <reference types="node" />
+import Bluebird from 'bluebird';
+import * as events from 'events';
+import webpack from 'webpack';
+declare type FilePath = string;
+/**
+ * Configuration object for this Webpack preprocessor
+ */
+interface PreprocessorOptions {
+    webpackOptions?: webpack.Configuration;
+    watchOptions?: Object;
+    typescript?: string;
+    additionalEntries?: string[];
+}
+interface FileEvent extends events.EventEmitter {
+    filePath: FilePath;
+    outputPath: string;
+    shouldWatch: boolean;
+}
+/**
+ * Cypress asks file preprocessor to bundle the given file
+ * and return the full path to produced bundle.
+ */
+declare type FilePreprocessor = (file: FileEvent) => Bluebird<FilePath>;
+declare type WebpackPreprocessorFn = (options: PreprocessorOptions) => FilePreprocessor;
+/**
+ * Cypress file preprocessor that can bundle specs
+ * using Webpack.
+ */
+interface WebpackPreprocessor extends WebpackPreprocessorFn {
+    /**
+     * Default options for Cypress Webpack preprocessor.
+     * You can modify these options then pass to the preprocessor.
+     * @example
+      ```
+      const defaults = webpackPreprocessor.defaultOptions
+      module.exports = (on) => {
+        delete defaults.webpackOptions.module.rules[0].use[0].options.presets
+        on('file:preprocessor', webpackPreprocessor(defaults))
+      }
+      ```
+     *
+     * @type {Omit<PreprocessorOptions, 'additionalEntries'>}
+     * @memberof WebpackPreprocessor
+     */
+    defaultOptions: Omit<PreprocessorOptions, 'additionalEntries'>;
+}
+/**
+ * Webpack preprocessor configuration function. Takes configuration object
+ * and returns file preprocessor.
+ * @example
+  ```
+  on('file:preprocessor', webpackPreprocessor(options))
+  ```
+ */
+declare const preprocessor: WebpackPreprocessor;
+export = preprocessor;

@@ -1,0 +1,44 @@
+import { CodegenResult as CodegenResult$1, CompilerError, CompilerOptions, ParserOptions, RootNode } from '@vue/compiler-core';
+
+interface ComponentImport {
+    path: string;
+    named?: boolean;
+    name?: string;
+}
+interface Options {
+    filename: string;
+    components?: Record<string, ComponentImport>;
+}
+interface CodegenResult extends CodegenResult$1 {
+    errors: CompilerError[];
+    /**
+     * Positions of expressions.
+     *
+     * [offset, length]
+     */
+    expressions: Array<[number, number]>;
+    /**
+     * Each tuple represents an simple expression (mostly identifier).
+     *
+     * [generatedOffset, generatedLength, sourceOffset, sourceLength, prefixLength]
+     */
+    mappings: Array<[number, number, number, number, number]>;
+}
+
+/// <reference path="augment-node.d.ts" />
+
+/**
+ * @internal
+ */
+declare function getTopLevelIdentifiers(source: string, ignoreImportsFrom: string[]): {
+    identifiers: Set<string>;
+    components: Set<string>;
+    directives: Set<string>;
+    propsIdentifier: string | undefined;
+    emitIdentifier: string | undefined;
+};
+
+declare function compile(template: string, options: Options & CompilerOptions): CodegenResult;
+declare function parse(template: string, options: ParserOptions): RootNode;
+
+export { CodegenResult, ComponentImport, Options, compile, getTopLevelIdentifiers, parse };

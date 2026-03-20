@@ -1,0 +1,1933 @@
+import { parse } from '@vuedx/compiler-sfc';
+import * as Path from 'path';
+import { getComponentName as getComponentName$1, getComponentNameAliases, isPascalCase, kebabCase, isNotNull, flatten } from '@vuedx/shared';
+import { parse as parse$1 } from '@babel/parser';
+import traverse, { NodePath } from '@babel/traverse';
+import * as T from '@babel/types';
+import { traverseFast, isIdentifier, isImportSpecifier, isObjectProperty, isObjectExpression, isMemberExpression, isStringLiteral, cloneNode, isExportSpecifier, isTSTypeAliasDeclaration, isTSInterfaceDeclaration, isBooleanLiteral, isObjectPattern, isBlockStatement, isReturnStatement, isObjectMember } from '@babel/types';
+import generate from '@babel/generator';
+import { parse as parse$2 } from '@vuedx/compiler-tsx';
+import { traverse as traverse$1, isSimpleExpressionNode, isDirectiveNode } from '@vuedx/template-ast-types';
+import * as micromatch from 'micromatch';
+
+function createComponentInfoFactory(fileName) {
+    const component = {
+        name: getComponentName$1(fileName),
+        aliases: getComponentNameAliases(fileName),
+        fileName,
+        description: '',
+        tags: [],
+        props: [],
+        emits: [],
+        components: [],
+        errors: [],
+        identifierSource: {},
+    };
+    const factory = {
+        addError(message, loc) {
+            component.errors.push({ message, loc });
+            return factory;
+        },
+        addIdentifier(id, name, loc) {
+            // TODO: Add error handling here
+            component.identifierSource[id] = { name, loc };
+        },
+        addProp(name, options = {}) {
+            const index = component.props.findIndex((prop) => prop.name === name);
+            if (options.loc != null) {
+                factory.addIdentifier(name, 'props', options.loc);
+            }
+            if (index >= 0) {
+                const prop = component.props[index];
+                Object.assign(prop, { name, ...options });
+            }
+            else {
+                component.props.push({
+                    name,
+                    tags: [],
+                    description: '',
+                    required: false,
+                    type: [{ kind: 'expression', imports: [], expression: 'any' }],
+                    defaultValue: null,
+                    loc: null,
+                    ...options,
+                });
+            }
+            return factory;
+        },
+        addEmit(name, options = {}) {
+            const emit = component.emits.find((emit) => emit.name === name);
+            // TODO: Create an emit merge function.
+            if (emit != null) {
+                if (options.isInferred === true) {
+                    if (options.loc != null) {
+                        options.references = emit.references;
+                        options.references.push(options.loc);
+                    }
+                    if (options.type != null) {
+                        const expressions = new Set(options.type.map((type) => type.kind === 'expression' ? type.expression : ''));
+                        emit.type.forEach((type) => {
+                            var _a;
+                            if (type.kind === 'expression') {
+                                if (!expressions.has(type.kind)) {
+                                    (_a = options.type) === null || _a === void 0 ? void 0 : _a.push(type);
+                                }
+                            }
+                        });
+                    }
+                }
+                Object.assign(emit, { name, ...options });
+            }
+            else {
+                component.emits.push({
+                    name,
+                    tags: [],
+                    description: '',
+                    type: [
+                        {
+                            kind: 'expression',
+                            imports: [],
+                            expression: '(event?: any) => void',
+                        },
+                    ],
+                    loc: null,
+                    references: options.isInferred === true && options.loc != null
+                        ? [options.loc]
+                        : [],
+                    isInferred: false,
+                    isDynamic: false,
+                    ...options,
+                });
+            }
+            return factory;
+        },
+        addLocalComponent(name, source, loc = null, kind = 'script') {
+            const aliases = isPascalCase(name) ? [name, kebabCase(name)] : [name];
+            component.components.push({ name, aliases, kind, source, loc });
+            return factory;
+        },
+        addOption(name, address) {
+            if (name === '') {
+                component.options = {
+                    properties: {},
+                    ...component.options,
+                    ...address,
+                };
+            }
+            else {
+                if (component.options == null)
+                    throw new Error('Cannot set option location without setting options');
+                component.options.properties[name] = address;
+            }
+            return factory;
+        },
+        addSetup(name, address) {
+            if (name === '') {
+                component.fnSetupOption = {
+                    ...address,
+                };
+            }
+            else {
+                if (component.fnSetupOption == null)
+                    throw new Error('Cannot set setup params location without setting setup');
+                component.fnSetupOption[name] = address;
+            }
+            return factory;
+        },
+        addScriptSetup(name, address) {
+            if (component.scriptSetup == null) {
+                component.scriptSetup = {};
+            }
+            component.scriptSetup[name] = address;
+            return factory;
+        },
+        info() {
+            return component;
+        },
+    };
+    return factory;
+}
+
+const parsers = {
+    sfc: {
+        sourceMap: false,
+        pad: 'space',
+    },
+    babel: {
+        sourceType: 'module',
+        plugins: [
+            'bigInt',
+            'optionalChaining',
+            'optionalCatchBinding',
+            'nullishCoalescingOperator',
+            'objectRestSpread',
+        ],
+    },
+};
+function createAnalyzer(plugins, options = {}) {
+    function createContext(fileName, content, localOptions) {
+        const { descriptor } = parse(content, {
+            ...parsers.sfc,
+            ...options.sfc,
+            ...localOptions,
+            filename: fileName,
+        });
+        return {
+            fileName,
+            component: createComponentInfoFactory(fileName),
+            descriptor,
+            plugins,
+            parsers: {
+                sfc: { ...parsers.sfc, ...options.sfc, ...localOptions },
+                babel: { ...parsers.babel, ...options.babel },
+            },
+        };
+    }
+    function analyze(content, fileName = 'anonymous.vue') {
+        const context = createContext(fileName, content, {});
+        processSFC(context);
+        return context.component.info();
+    }
+    function analyzeBlockText(content, fileName = 'anonymous.vue') {
+        const context = createContext(fileName, content, {});
+        processSFC(context);
+        return context.component.info();
+    }
+    function analyzeScript(content, fileName = 'anonymous.js', mode = 'script') {
+        const ext = Path.posix.extname(fileName);
+        return analyzeBlockText(`<script lang="${ext.substr(1)}" ${mode === 'scriptSetup' ? 'setup' : ''}>${content}</script>`, fileName.substr(0, fileName.length - ext.length) + '.vue');
+    }
+    function analyzeTemplate(content, fileName = 'anonymous.html') {
+        const ext = Path.posix.extname(fileName);
+        return analyzeBlockText(`<template>${content}</template>`, fileName.substr(0, fileName.length - ext.length) + '.vue');
+    }
+    return { analyze, analyzeScript, analyzeTemplate };
+}
+function processSFC(context) {
+    const { script, scriptSetup, template, styles, customBlocks, } = context.descriptor;
+    function call(block) {
+        const kind = block.type;
+        context.plugins.forEach(({ blocks }) => {
+            const blockFn = blocks === null || blocks === void 0 ? void 0 : blocks[kind];
+            if (blockFn != null) {
+                blockFn(block, context);
+            }
+        });
+    }
+    if (scriptSetup != null)
+        call(scriptSetup);
+    else if (script != null)
+        call(script);
+    if (template != null)
+        call(template);
+    styles.forEach(call);
+    customBlocks.forEach((block) => call(block));
+}
+
+function createPlugin(options) {
+    return options;
+}
+
+function createSourceRange(context, node) {
+    if (node.start == null || node.end == null || node.loc == null) {
+        return {
+            source: '',
+            start: { offset: 0, line: 0, column: 0 },
+            end: { offset: 0, line: 0, column: 0 },
+        };
+    }
+    else {
+        const source = 'source' in context ? context.source : context.descriptor.source;
+        return {
+            source: source.substring(node.start, node.end),
+            start: {
+                offset: node.start,
+                line: node.loc.start.line,
+                column: node.loc.start.column,
+            },
+            end: {
+                offset: node.end,
+                line: node.loc.end.line,
+                column: node.loc.end.column,
+            },
+        };
+    }
+}
+
+const ScriptBlockAnalyzer = createPlugin({
+    blocks: {
+        script: (block, ctx) => {
+            if (block.src == null) {
+                try {
+                    processScript(createScriptContext(block.content, ctx, block));
+                }
+                catch (error) {
+                    ctx.component.addError(error instanceof Error ? error.message : String(error), block.loc.start);
+                }
+            }
+        },
+    },
+});
+function createScriptContext(content, context, block) {
+    const script = block !== null && block !== void 0 ? block : {
+        type: 'script',
+        content: content,
+        setup: false,
+        attrs: {},
+        // TODO: Create loc object as if javascript file.
+        loc: {
+            start: { offset: 0, line: 1, column: 1 },
+            end: { offset: 0, line: 1, column: 1 },
+            source: content,
+        },
+    };
+    const { ast } = parseJS(context, content, script.lang === 'ts');
+    return {
+        ...context,
+        mode: script.setup != null ? 'setup' : 'module',
+        ast: ast,
+        source: content,
+        block: script,
+    };
+}
+function parseJS(context, content, enableTS, offset = 0) {
+    var _a, _b;
+    let result;
+    if (context.parsers.typescript != null) {
+        result = context.parsers.typescript(context.fileName, content, {
+            language: enableTS ? 'ts' : 'js',
+        });
+    }
+    else {
+        const plugins = (_b = (_a = context.parsers.babel.plugins) === null || _a === void 0 ? void 0 : _a.slice()) !== null && _b !== void 0 ? _b : [];
+        if (enableTS && !plugins.includes('typescript')) {
+            plugins.push('typescript');
+        }
+        const ast = parse$1(content, {
+            ...context.parsers.babel,
+            plugins: Array.from(new Set(plugins)),
+            ranges: true,
+            // @ts-expect-error
+            errorRecovery: true,
+        });
+        result = { ast };
+    }
+    if (offset !== 0 && Number.isInteger(offset)) {
+        traverseFast(result.ast, (node) => {
+            const n = node;
+            n.start += offset;
+            n.end += offset;
+        });
+    }
+    return result;
+}
+function processScript(context) {
+    var _a, _b;
+    // @ts-expect-error
+    if (((_b = (_a = context.ast.errors) === null || _a === void 0 ? void 0 : _a.length) !== null && _b !== void 0 ? _b : 0) > 0) {
+        // @ts-expect-error
+        context.ast.errors.forEach((error) => context.component.addError(error.message, {
+            ...error.loc,
+            offset: error.pos,
+        }));
+        return;
+    }
+    const enterHandlers = context.plugins
+        .map((plugin) => {
+        if (plugin.babel != null) {
+            if (typeof plugin.babel === 'function') {
+                return plugin.babel;
+            }
+            else if ('enter' in plugin.babel) {
+                return plugin.babel.enter;
+            }
+        }
+        return undefined;
+    })
+        .filter(isNotNull);
+    const exitHandlers = context.plugins
+        .map((plugin) => {
+        if (plugin.babel != null && 'exit' in plugin.babel) {
+            return plugin.babel.exit;
+        }
+        return undefined;
+    })
+        .filter(isNotNull);
+    const setupHandlers = flatten(context.plugins.map((plugin) => plugin.setup).filter(isNotNull));
+    const optionsHandlers = flatten(context.plugins
+        .map((plugin) => (Array.isArray(plugin.options) ? plugin.options : null))
+        .filter(isNotNull));
+    const optionsByNameHandlers = context.plugins
+        .map((plugin) => (Array.isArray(plugin.options) ? null : plugin.options))
+        .filter(isNotNull);
+    const declarationHandlers = flatten(context.plugins.map((plugin) => plugin.declaration).filter(isNotNull));
+    function call(fns, node) {
+        fns.forEach((fn) => {
+            try {
+                fn(node, context);
+            }
+            catch (error) {
+                context.component.addError(error instanceof Error ? error.message : String(error), { column: 0, line: 0, offset: 0 });
+            }
+        });
+    }
+    function processOptions(options$) {
+        const properties$ = options$.get('properties');
+        context.component.addOption('', {
+            loc: createSourceRange(context, options$.node),
+        });
+        properties$.forEach((property$) => {
+            if (property$.isObjectMember()) {
+                const { key } = property$.node;
+                if (isIdentifier(key)) {
+                    const name = key.name;
+                    context.component.addOption(name, {
+                        loc: createSourceRange(context, property$.isObjectProperty()
+                            ? property$.node.value
+                            : property$.node),
+                    });
+                    optionsByNameHandlers.forEach((options) => {
+                        const fn = options[name];
+                        if (fn != null) {
+                            try {
+                                fn(property$, context);
+                            }
+                            catch (error) {
+                                context.component.addError(error instanceof Error ? error.message : String(error), { column: 0, line: 0, offset: 0 });
+                            }
+                        }
+                    });
+                    if (name === 'setup') {
+                        if (property$.isObjectMethod()) {
+                            context.component.addSetup('', {
+                                loc: createSourceRange(context, property$.node),
+                            });
+                            call(setupHandlers, property$);
+                        }
+                        else if (property$.isObjectProperty()) {
+                            const value$ = property$.get('value');
+                            if (value$.isFunctionExpression() ||
+                                value$.isArrowFunctionExpression()) {
+                                context.component.addSetup('', {
+                                    loc: createSourceRange(context, value$.node),
+                                });
+                                call(setupHandlers, value$);
+                            }
+                        }
+                    }
+                }
+            }
+        });
+    }
+    traverse(context.ast, {
+        enter(path) {
+            call(enterHandlers, path);
+        },
+        exit(path) {
+            call(exitHandlers, path);
+        },
+        CallExpression(path) {
+            const callee$ = path.get('callee');
+            const args$ = path.get('arguments');
+            if (callee$.isIdentifier()) {
+                const options$ = args$[0];
+                if (callee$.node.name === 'defineProps') {
+                    context.component.addScriptSetup('defineProps', {
+                        loc: createSourceRange(context, path.node),
+                    });
+                    optionsByNameHandlers.forEach((handlers) => {
+                        const fn = handlers['props'];
+                        if (fn != null) {
+                            try {
+                                fn(options$, context);
+                            }
+                            catch (error) {
+                                context.component.addError(error instanceof Error ? error.message : String(error), { column: 0, line: 0, offset: 0 });
+                            }
+                        }
+                    });
+                }
+                else if (callee$.node.name === 'defineEmit') {
+                    context.component.addScriptSetup('defineEmit', {
+                        loc: createSourceRange(context, path.node),
+                    });
+                    optionsByNameHandlers.forEach((handlers) => {
+                        const fn = handlers['emits'];
+                        if (fn != null) {
+                            try {
+                                fn(options$, context);
+                            }
+                            catch (error) {
+                                context.component.addError(error instanceof Error ? error.message : String(error), { column: 0, line: 0, offset: 0 });
+                            }
+                        }
+                    });
+                }
+            }
+        },
+        ExportDefaultDeclaration(path) {
+            const d$ = path.get('declaration');
+            /**
+             * Matches:
+             * export default {}
+             */
+            if (d$.isObjectExpression()) {
+                const declaration$ = d$;
+                call(declarationHandlers, declaration$);
+                call(optionsHandlers, declaration$);
+                processOptions(declaration$);
+            }
+            else if (d$.isCallExpression()) {
+                const declaration$ = d$;
+                /**
+                 * Matches:
+                 * export default fn(...)
+                 */
+                const { callee } = declaration$.node;
+                const args$ = declaration$.get('arguments');
+                const options$ = (Array.isArray(args$)
+                    ? args$[0]
+                    : args$);
+                /**
+                 * Matches:
+                 * export default defineComponent(...)
+                 */
+                if (isIdentifier(callee) && callee.name === 'defineComponent') {
+                    if (options$.isObjectExpression()) {
+                        /**
+                         * Matches:
+                         * export default defineComponent({ ... })
+                         */
+                        call(declarationHandlers, declaration$);
+                        call(optionsHandlers, options$);
+                        processOptions(options$);
+                    }
+                    else if (options$.isArrowFunctionExpression() ||
+                        options$.isFunctionExpression()) {
+                        context.component.addSetup('', {
+                            loc: createSourceRange(context, options$.node),
+                        });
+                        /**
+                         * Matches:
+                         * export default defineComponent(() => {...})
+                         * export default defineComponent(function setup() {...})
+                         */
+                        call(setupHandlers, options$);
+                    }
+                }
+            }
+        },
+    });
+}
+
+const ScriptIdentifierSourceAnalyzer = createPlugin({
+    babel(node$, context) {
+        if (context.mode !== 'setup')
+            return;
+        const node = node$.node;
+        if (T.isProgram(node)) {
+            const register = (node, kind) => {
+                if (T.isIdentifier(node)) {
+                    context.component.addIdentifier(node.name, `scriptSetup:${kind}`, createSourceRange(context, node));
+                }
+                else if (T.isObjectPattern(node)) {
+                    node.properties.forEach((property) => {
+                        if (T.isObjectProperty(property)) {
+                            register(property.key, kind);
+                        }
+                        else {
+                            register(property.argument, kind);
+                        }
+                    });
+                }
+                else if (T.isArrayPattern(node)) {
+                    node.elements.forEach((element) => {
+                        if (T.isRestElement(element)) {
+                            register(element.argument, kind);
+                        }
+                        else if (T.isAssignmentPattern(element)) {
+                            register(element.left, kind);
+                        }
+                        else if (element != null) {
+                            register(element, kind);
+                        }
+                    });
+                }
+                else if (T.isMemberExpression(node)) {
+                    register(node.object, kind);
+                }
+            };
+            const processStatement = (statement) => {
+                if (T.isLabeledStatement(statement)) {
+                    if (statement.label.name === 'ref') {
+                        if (T.isExpressionStatement(statement.body)) {
+                            if (T.isAssignmentExpression(statement.body.expression)) {
+                                register(statement.body.expression.left, 'refLabel');
+                            }
+                        }
+                    }
+                }
+                else if (T.isVariableDeclaration(statement)) {
+                    statement.declarations.forEach(({ id }) => {
+                        register(id, 'value');
+                    });
+                }
+                else if (T.isFunctionDeclaration(statement)) {
+                    if (statement.id != null) {
+                        register(statement.id, 'function');
+                    }
+                }
+            };
+            node.body.forEach(processStatement);
+        }
+    },
+    options: {
+        data(property$, context) {
+            setIdentifiersSource(property$.node, 'data', context);
+        },
+        setup(property$, context) {
+            setIdentifiersSource(property$.node, 'setup', context);
+        },
+        computed(property$, context) {
+            setIdentifiersSource(property$.node, 'computed', context);
+        },
+        methods(property$, context) {
+            setIdentifiersSource(property$.node, 'methods', context);
+        },
+        inject(property$, context) {
+            setIdentifiersSource(property$.node, 'inject', context, [
+                'object',
+                'array',
+            ]);
+        },
+    },
+});
+function setIdentifiersSource(node, source, context, allowedTypes = ['object']) {
+    const register = (obj) => {
+        if (allowedTypes.includes('object') && T.isObjectExpression(obj)) {
+            obj.properties.forEach((property) => {
+                if (T.isObjectMember(property)) {
+                    if (T.isIdentifier(property.key)) {
+                        context.component.addIdentifier(property.key.name, source, createSourceRange(context, property.key));
+                    }
+                }
+            });
+        }
+        else if (allowedTypes.includes('array') && T.isArrayExpression(obj)) {
+            obj.elements.forEach((element) => {
+                if (T.isStringLiteral(element)) {
+                    context.component.addIdentifier(element.value, source, createSourceRange(context, element));
+                }
+            });
+        }
+    };
+    if (T.isObjectProperty(node)) {
+        if (T.isObjectExpression(node.value) || T.isArrayExpression(node.value)) {
+            register(node.value);
+        }
+        else if (T.isFunctionExpression(node.value) ||
+            T.isArrowFunctionExpression(node.value)) {
+            register(getReturnExpression(node.value));
+        }
+    }
+    else {
+        register(getReturnExpression(node));
+    }
+}
+function getReturnExpression(node) {
+    var _a, _b;
+    if (T.isBlockStatement(node.body)) {
+        return ((_b = (_a = node.body.body.find((node) => T.isReturnStatement(node))) === null || _a === void 0 ? void 0 : _a.argument) !== null && _b !== void 0 ? _b : undefined);
+    }
+    else if (T.isExpression(node.body)) {
+        return node.body;
+    }
+    return undefined;
+}
+
+const ComponentsOptionAnalyzer = createPlugin({
+    babel: (path$, ctx) => {
+        if (ctx.mode === 'setup' && path$.isImportDeclaration()) {
+            const node = path$.node;
+            node.specifiers.filter((specifier) => {
+                if (isIdentifier(specifier.local) &&
+                    (node.source.value.endsWith('.vue') ||
+                        isPascalCase(specifier.local.name))) {
+                    ctx.component.addLocalComponent(specifier.local.name, {
+                        moduleName: node.source.value,
+                        exportName: isImportSpecifier(specifier)
+                            ? getComponentName(specifier.imported)
+                            : undefined,
+                        localName: specifier.local.name,
+                        loc: createSourceRange(ctx, node),
+                    }, createSourceRange(ctx, node), 'scriptSetup');
+                }
+                return false;
+            });
+        }
+    },
+    options: {
+        components: (path$, ctx) => {
+            const property = path$.node;
+            if (isObjectProperty(property)) {
+                const { value: components } = property;
+                if (isObjectExpression(components)) {
+                    components.properties.forEach((declaration) => {
+                        if (isObjectProperty(declaration)) {
+                            const name = getComponentName(declaration.key);
+                            if (name != null) {
+                                if (isIdentifier(declaration.value)) {
+                                    const info = resolveComponentInformation(path$.scope.getBinding(declaration.value.name), ctx);
+                                    if (info != null) {
+                                        ctx.component.addLocalComponent(name, info, createSourceRange(ctx, declaration));
+                                    }
+                                }
+                                else if (isMemberExpression(declaration.value)) {
+                                    const id = getIdentifierFromMemberExpression(declaration.value);
+                                    if (id != null) {
+                                        const info = resolveComponentInformation(path$.scope.getBinding(id.name), ctx);
+                                        if (info != null) {
+                                            ctx.component.addLocalComponent(name, info, createSourceRange(ctx, declaration));
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    });
+                }
+            }
+        },
+    },
+});
+function getComponentName(key) {
+    if (isIdentifier(key))
+        return key.name;
+    if (isStringLiteral(key))
+        return key.value;
+    return undefined;
+}
+function getIdentifierFromMemberExpression(exp) {
+    if (isIdentifier(exp.object))
+        return exp.object;
+    if (isMemberExpression(exp.object))
+        return getIdentifierFromMemberExpression(exp.object);
+    return undefined;
+}
+function resolveComponentInformation(binding, context) {
+    if (binding == null)
+        return undefined;
+    switch (binding.kind) {
+        case 'module':
+            {
+                const path$ = binding.path;
+                if (path$.isImportDefaultSpecifier()) {
+                    const node = path$.node;
+                    const parent = path$.parent;
+                    return {
+                        moduleName: parent.source.value,
+                        localName: node.local.name,
+                        loc: createSourceRange(context, parent),
+                    };
+                }
+                else if (path$.isImportSpecifier()) {
+                    const node = path$.node;
+                    const parent = path$.parent;
+                    return {
+                        moduleName: parent.source.value,
+                        exportName: isStringLiteral(node.imported)
+                            ? node.imported.value
+                            : node.imported.name,
+                        localName: node.local.name,
+                        loc: createSourceRange(context, parent),
+                    };
+                }
+            }
+            break;
+    }
+    return undefined;
+}
+
+function getTypeAnnotation(node$, context) {
+    try {
+        const imports = [];
+        const identifiers = {};
+        const processed = new Set();
+        const collect = (name$) => {
+            const name = name$.node.name;
+            if (processed.has(name))
+                return;
+            const source = getIdentifierSource(name$, context);
+            const inline = source.filter((item) => typeof item === 'string');
+            processed.add(name);
+            if (inline.length > 0)
+                identifiers[name] = inline;
+            source.forEach((item) => {
+                if (typeof item === 'object') {
+                    imports.push(item);
+                }
+            });
+        };
+        traverse(node$.node, {
+            TSTypeReference(type$) {
+                const typeName$ = type$.get('typeName');
+                if (typeName$.isIdentifier()) {
+                    collect(typeName$);
+                }
+                else if (typeName$.isTSQualifiedName()) {
+                    const left$ = typeName$.get('left');
+                    if (left$.isIdentifier()) {
+                        collect(left$);
+                    }
+                }
+            },
+        }, node$.scope, null, node$.parentPath);
+        const node = cloneNode(node$.isTSInterfaceDeclaration()
+            ? node$.node.body
+            : node$.node.typeAnnotation);
+        const knownImports = new Set(imports.map((i) => i.localName));
+        traverseFast(node, (node) => {
+            if (isIdentifier(node) && !knownImports.has(node.name)) {
+                const identifier = identifiers[node.name];
+                if (identifier != null) {
+                    if (identifier.length === 1 && identifier[0] != null) {
+                        node.name = `(${identifier[0]})`;
+                    }
+                    else if (identifier.length > 1) {
+                        node.name = `(${identifier.map((id) => `(${id})`).join(' & ')})`;
+                    }
+                }
+            }
+        });
+        // TODO: Inline unresolved identifiers, before generating.
+        const type = stringifyBabelNode(node);
+        return { type, imports };
+    }
+    catch (error) {
+        return { type: 'any', imports: [] };
+    }
+}
+function stringifyBabelNode(node) {
+    return generate(node, {
+        sourceMaps: false,
+        concise: true,
+    }).code;
+}
+function getIdentifierSource(name$, context) {
+    const name = name$.node.name;
+    const binding = name$.scope.getBinding(name);
+    const result = [];
+    if (binding != null) {
+        const node$ = binding.path;
+        if (node$.isImportDefaultSpecifier() || node$.isImportSpecifier()) {
+            const parent$ = node$.parentPath;
+            const statement = parent$.node;
+            const moduleName = statement.source.value;
+            const localName = name;
+            const importSource = { moduleName, localName };
+            if (node$.isImportDefaultSpecifier()) {
+                result.push(importSource);
+            }
+            else if (node$.isImportSpecifier()) {
+                const imported$ = node$.get('imported');
+                importSource.exportName = imported$.isIdentifier()
+                    ? imported$.node.name
+                    : imported$.isStringLiteral()
+                        ? imported$.node.value
+                        : undefined; // Should not ever happen.
+                result.push(importSource);
+            }
+        }
+    }
+    else if ('ast' in context) {
+        traverse(context.ast, {
+            ExportNamedDeclaration(statement$) {
+                if (context.mode !== 'setup') {
+                    const statement = statement$.node;
+                    if (statement.specifiers.length > 0) {
+                        const specifier = statement.specifiers.find((specifier) => isExportSpecifier(specifier) &&
+                            (isIdentifier(specifier.exported)
+                                ? specifier.exported.name === name
+                                : specifier.exported.value === name));
+                        if (specifier != null) {
+                            result.push({
+                                moduleName: context.fileName,
+                                localName: name,
+                                exportName: name,
+                            });
+                        }
+                    }
+                    else if (isTSTypeAliasDeclaration(statement.declaration) ||
+                        isTSInterfaceDeclaration(statement.declaration)) {
+                        if (statement.declaration.id.name === name) {
+                            result.push({
+                                moduleName: context.fileName,
+                                localName: name,
+                                exportName: name,
+                            });
+                        }
+                    }
+                }
+            },
+            TSTypeAliasDeclaration(statement$) {
+                if (statement$.node.id.name === name) {
+                    if (statement$.node.typeParameters == null) {
+                        // No generics.
+                        const raw = getTypeAnnotation(statement$, context);
+                        result.push(raw.type, ...raw.imports);
+                    }
+                }
+            },
+            TSInterfaceDeclaration(statement$) {
+                if (statement$.node.id.name === name) {
+                    if (statement$.node.typeParameters == null) {
+                        // No generics
+                        const raw = getTypeAnnotation(statement$, context);
+                        result.push(raw.type, ...raw.imports);
+                    }
+                    // TODO: Handle extends
+                }
+            },
+        });
+    }
+    return result;
+}
+function inferType(node$) {
+    if (node$.isStringLiteral()) {
+        return 'string';
+    }
+    else if (node$.isNumericLiteral()) {
+        return 'number';
+    }
+    else if (node$.isBooleanLiteral()) {
+        return 'boolean';
+    }
+    else if (node$.isArrayExpression()) {
+        const elements$ = node$.get('elements');
+        return `[${elements$.map(inferType).join(',')}]`;
+    }
+    else {
+        return 'any';
+    }
+}
+
+const EmitsOptionsAnalyzer = createPlugin({
+    options: {
+        emits(node$, context) {
+            const emits$ = node$.isObjectProperty()
+                ? node$.get('value')
+                : node$;
+            if (emits$.isObjectExpression()) {
+                const properties$ = emits$.get('properties');
+                properties$.forEach((property$) => {
+                    const key$ = property$.get('key');
+                    if (key$.isIdentifier()) {
+                        const name = key$.node.name;
+                        context.component.addEmit(name, {
+                            loc: createSourceRange(context, property$.node),
+                        });
+                        if (property$.isObjectMethod()) {
+                            const params$ = property$.get('params');
+                            const type = getTypeInfo$1(params$, context);
+                            if (type != null)
+                                context.component.addEmit(name, { type });
+                        }
+                        else if (property$.isObjectProperty()) {
+                            const value$ = property$.get('value');
+                            if (value$.isFunctionExpression() ||
+                                value$.isArrowFunctionExpression()) {
+                                const params$ = value$.get('params');
+                                const type = getTypeInfo$1(params$, context);
+                                if (type != null)
+                                    context.component.addEmit(name, { type });
+                            }
+                        }
+                    }
+                });
+            }
+            else if (emits$.isArrayExpression()) {
+                emits$.node.elements.forEach((element) => {
+                    if (isStringLiteral(element)) {
+                        context.component.addEmit(element.value, {
+                            loc: createSourceRange(context, element),
+                        });
+                    }
+                });
+            }
+        },
+    },
+});
+const ImplicitEmitsAnalyzer = createPlugin({
+    options: [
+        (node$, context) => {
+            if (context.mode === 'setup')
+                return; // No $emit() in <script setup>
+            if (node$.get('properties').some((property$) => {
+                if (property$.isObjectProperty()) {
+                    const key$ = property$.get('key');
+                    if (key$.isIdentifier()) {
+                        return key$.node.name === 'emits';
+                    }
+                }
+                return undefined;
+            })) {
+                return; // emits option is defined
+            }
+            processInferredEmits(node$, context);
+        },
+    ],
+    templateExpression: (node$, context) => {
+        var _a, _b;
+        const info = context.component.info(); // script is already processed at this point
+        if (((_a = info.options) === null || _a === void 0 ? void 0 : _a.properties['emits']) != null)
+            return; // Explicit emits
+        if (((_b = info.scriptSetup) === null || _b === void 0 ? void 0 : _b.defineEmit) != null)
+            return; // Explicit emits
+        processInferredEmits(node$, context, true);
+    },
+});
+function processInferredEmits(node$, context, inTemplate = false) {
+    const { node, scope, parentPath } = node$ instanceof NodePath ? node$ : { node: node$ };
+    traverse(node, {
+        CallExpression(node$) {
+            const callee$ = node$.get('callee');
+            const args$ = node$.get('arguments');
+            if (args$.length === 0)
+                return;
+            if (callee$.isMemberExpression()) {
+                const object$ = callee$.get('object');
+                const property$ = callee$.get('property');
+                if (object$.isThisExpression() &&
+                    property$.isIdentifier() &&
+                    property$.node.name === '$emit') ;
+                else {
+                    return;
+                }
+            }
+            else if (inTemplate &&
+                callee$.isIdentifier() &&
+                callee$.node.name === '$emit') ;
+            else {
+                return;
+            }
+            const event$ = args$.shift();
+            const type = getTypeInfo$1(args$, context, false);
+            if (event$.isStringLiteral()) {
+                const name = event$.node.value;
+                context.component.addEmit(name, {
+                    loc: createSourceRange(context, node$.node),
+                    type,
+                    isInferred: true,
+                });
+            }
+            else {
+                const name = stringifyBabelNode(event$.node);
+                context.component.addEmit(name, {
+                    loc: createSourceRange(context, node$.node),
+                    type,
+                    isInferred: true,
+                    isDynamic: true,
+                });
+            }
+        },
+    }, scope, null, parentPath);
+}
+function getTypeInfo$1(params$, context, inFunctionParams = true) {
+    if (params$.length === 0) {
+        return [{ kind: 'expression', imports: [], expression: '() => void' }];
+    }
+    else {
+        const imports = [];
+        const types = params$.map((param$, index) => {
+            let type = 'any';
+            const name = inFunctionParams && param$.isIdentifier()
+                ? param$.node.name
+                : `arg${index}`;
+            const optional = param$.node.optional === true ? '?' : '';
+            if (param$.has('typeAnnotation')) {
+                const result = param$.isTSAsExpression()
+                    ? getTypeAnnotation(param$, context)
+                    : getTypeAnnotation(param$.get('typeAnnotation'), context);
+                type = result.type;
+                imports.push(...result.imports);
+            }
+            else if (!inFunctionParams) {
+                type = inferType(param$);
+            }
+            return `${name}${optional}: ${type}`;
+        });
+        const imported = new Set();
+        return [
+            {
+                kind: 'expression',
+                imports: imports.filter((source) => {
+                    try {
+                        return !imported.has(source.localName);
+                    }
+                    finally {
+                        imported.add(source.localName);
+                    }
+                }),
+                expression: `(${types.join(', ')}) => void`,
+            },
+        ];
+    }
+}
+
+const PropsOptionsAnalyzer = createPlugin({
+    options: {
+        props(property$, context) {
+            const props$ = property$.isObjectProperty()
+                ? property$.get('value')
+                : property$;
+            if (props$.isObjectExpression()) {
+                props$.get('properties').forEach((property$) => {
+                    if (property$.isObjectProperty()) {
+                        const key$ = property$.get('key');
+                        const value$ = property$.get('value');
+                        if (key$.isIdentifier()) {
+                            const name = key$.node.name;
+                            context.component.addProp(name, {
+                                loc: createSourceRange(context, property$.node),
+                            });
+                            if (value$.isIdentifier()) {
+                                const type = getTypeInfo(value$);
+                                if (type != null)
+                                    context.component.addProp(name, { type });
+                            }
+                            else if (value$.isArrayExpression()) {
+                                const type = getTypeInfo(value$);
+                                if (type != null)
+                                    context.component.addProp(name, { type });
+                            }
+                            else if (value$.isObjectExpression()) {
+                                const options = toObjectExpressionMap(value$);
+                                const info = {};
+                                if (options['required'] != null) {
+                                    const node = options['required'].node;
+                                    info.required =
+                                        isObjectProperty(node) &&
+                                            isBooleanLiteral(node.value) &&
+                                            node.value.value;
+                                }
+                                if (options['type'] != null) {
+                                    info.type = getTypeInfo(options['type'].get('value'));
+                                }
+                                context.component.addProp(name, info);
+                            }
+                        }
+                    }
+                });
+            }
+            else if (props$.isArrayExpression()) {
+                props$.node.elements.forEach((element) => {
+                    if (isStringLiteral(element)) {
+                        context.component.addProp(element.value, {
+                            loc: createSourceRange(context, element),
+                        });
+                    }
+                });
+            }
+        },
+    },
+});
+function getTypeInfo(path$) {
+    if (path$.isIdentifier()) {
+        switch (path$.node.name) {
+            case 'String':
+                return [{ kind: 'string' }];
+            case 'Number':
+                return [{ kind: 'number' }];
+            case 'Boolean':
+                return [{ kind: 'boolean' }];
+            case 'Object':
+            case 'Symbol':
+                return [
+                    {
+                        kind: 'expression',
+                        imports: [],
+                        expression: path$.node.name.toLowerCase(),
+                    },
+                ];
+            case 'Array':
+                return [{ kind: 'expression', imports: [], expression: 'any[]' }];
+        }
+    }
+    else if (path$.isArrayExpression()) {
+        return flatten(path$.get('elements')
+            .filter((element$) => element$.isIdentifier())
+            .map(getTypeInfo)
+            .filter(isNotNull));
+    }
+    else if (path$.isTSAsExpression()) {
+        return [
+            {
+                kind: 'expression',
+                imports: [],
+                expression: generate(path$.node.typeAnnotation, { sourceMaps: false })
+                    .code,
+            },
+        ];
+    }
+    return undefined;
+}
+function toObjectExpressionMap(path$) {
+    const map = {};
+    if (path$.isObjectExpression()) {
+        path$.get('properties').forEach((property$) => {
+            if (property$.isObjectMember()) {
+                const key = property$.node.key;
+                if (isIdentifier(key)) {
+                    map[key.name] = property$;
+                }
+            }
+        });
+    }
+    return map;
+}
+
+const SetupOptionsAnalyzer = createPlugin({
+    setup: [
+        (node$, context) => {
+            const { node } = node$;
+            const [props, setupContext] = node.params;
+            if (props != null) {
+                let rest;
+                const identifiers = [];
+                if (isObjectPattern(props)) {
+                    props.properties.forEach((prop) => {
+                        if (isObjectProperty(prop)) {
+                            if (isIdentifier(prop.value)) {
+                                identifiers.push(prop.value.name);
+                            }
+                        }
+                        else {
+                            if (isIdentifier(prop.argument)) {
+                                rest = prop.argument.name;
+                            }
+                        }
+                    });
+                }
+                else if (isIdentifier(props)) {
+                    rest = props.name;
+                }
+                context.component.addSetup('props', {
+                    identifiers,
+                    rest,
+                    loc: createSourceRange(context, props),
+                });
+            }
+            if (setupContext != null) {
+                let rest;
+                const identifiers = {};
+                if (isObjectPattern(setupContext)) {
+                    setupContext.properties.forEach((prop) => {
+                        if (isObjectProperty(prop)) {
+                            if (isIdentifier(prop.value) && isIdentifier(prop.key)) {
+                                identifiers[prop.key.name] =
+                                    prop.value.name;
+                            }
+                        }
+                        else {
+                            if (isIdentifier(prop.argument)) {
+                                rest = prop.argument.name;
+                            }
+                        }
+                    });
+                }
+                else if (isIdentifier(setupContext)) {
+                    rest = setupContext.name;
+                }
+                context.component.addSetup('context', {
+                    identifiers,
+                    rest,
+                    loc: createSourceRange(context, setupContext),
+                });
+            }
+            const addSetupSources = (node) => {
+                node.properties.forEach((property) => {
+                    if (isObjectMember(property)) {
+                        if (isIdentifier(property.key)) {
+                            context.component.addIdentifier(property.key.name, 'setup', createSourceRange(context, property.key));
+                        }
+                        else if (isStringLiteral(property.key)) {
+                            context.component.addIdentifier(property.key.value, 'setup', createSourceRange(context, property.key));
+                        }
+                    }
+                });
+            };
+            if (isBlockStatement(node.body)) {
+                const returnStatement = node.body.body.find((statement) => isReturnStatement(statement));
+                if ((returnStatement === null || returnStatement === void 0 ? void 0 : returnStatement.argument) != null) {
+                    context.component.addSetup('return', {
+                        loc: createSourceRange(context, returnStatement.argument),
+                    });
+                    if (isObjectExpression(returnStatement.argument)) {
+                        addSetupSources(returnStatement.argument);
+                    }
+                }
+            }
+            else {
+                context.component.addSetup('return', {
+                    loc: createSourceRange(context, node.body),
+                });
+                if (isObjectExpression(node.body)) {
+                    addSetupSources(node.body);
+                }
+            }
+        },
+    ],
+});
+
+const TemplateBlockAnalyzer = createPlugin({
+    blocks: {
+        template: (block, ctx) => {
+            if (block.src == null) {
+                const ast = parse$2(block.content, {
+                    onError(error) {
+                        if (error.loc != null) {
+                            ctx.component.addError(error.message, error.loc.start);
+                        }
+                    },
+                });
+                const templateExpressionFns = ctx.plugins
+                    .map((plugin) => plugin.templateExpression)
+                    .filter(Boolean);
+                traverse$1(ast, (node, ancestors) => {
+                    if (isSimpleExpressionNode(node)) {
+                        if (node.isStatic)
+                            return;
+                        if (templateExpressionFns.length === 0)
+                            return;
+                        const parent = ancestors[ancestors.length - 1];
+                        const offset = block.loc.start.offset + node.loc.start.offset;
+                        const source = `${node.content}`;
+                        if (isDirectiveNode(parent)) {
+                            if (parent.exp === node) {
+                                if (parent.name === 'for') {
+                                    return;
+                                }
+                            }
+                        }
+                        const { ast } = parseJS(ctx, source, false, offset);
+                        templateExpressionFns.forEach((fn) => {
+                            if (fn != null) {
+                                try {
+                                    fn(ast, ctx);
+                                }
+                                catch (error) {
+                                    ctx.component.addError(error instanceof Error ? error.message : String(error), { column: 0, line: 0, offset: 0 });
+                                }
+                            }
+                        });
+                    }
+                });
+            }
+        },
+    },
+});
+
+function toVeturData(components) {
+    const data = { tags: {}, attributes: {} };
+    components.forEach((component) => {
+        const name = kebabCase(component.name);
+        const info = (data.tags[name] = {
+            description: component.description,
+            attributes: [],
+        });
+        component.props.forEach((prop) => {
+            const propName = kebabCase(prop.name);
+            info.attributes.push(propName);
+            data.attributes[`${name}/${propName}`] = {
+                description: prop.description,
+                type: prop.type
+                    .map((type) => type.kind === 'expression' ? type.expression : type.kind)
+                    .join('|'),
+            };
+        });
+    });
+    return data;
+}
+
+function toWebTypes(name, version, components) {
+    const data = {
+        framework: 'vue',
+        name,
+        version,
+        contributions: {
+            'types-syntax': 'typescript',
+            'description-markup': 'markdown',
+            tags: [],
+            attributes: [],
+        },
+    };
+    components.forEach((component) => {
+        var _a, _b;
+        const tag = {
+            name: component.name,
+            aliases: component.aliases,
+            description: component.description,
+            attributes: [],
+            events: [],
+            slots: [],
+            'vue-model': [],
+            source: {
+                file: component.fileName,
+                offset: (_b = (_a = component.options) === null || _a === void 0 ? void 0 : _a.loc.start.offset) !== null && _b !== void 0 ? _b : 0,
+            },
+        };
+        const emits = new Set();
+        component.emits.forEach((emit) => {
+            emits.add(emit.name);
+            tag.events.push({
+                name: emit.name,
+                description: emit.description,
+                arguments: [], // TODO: Get arguments
+            });
+        });
+        component.props.forEach((prop) => {
+            tag.attributes.push({
+                name: prop.name,
+                description: prop.description,
+                required: prop.required,
+                default: stringifyDefaultValue(prop.defaultValue),
+                value: toValue(prop.type, prop.required),
+            });
+            if (emits.has(`onUpdate:${prop.name}`)) {
+                tag['vue-model'].push({
+                    prop: prop.name,
+                    event: `onUpdate:${prop.name}`,
+                });
+            }
+        });
+        // TODO: Get slots
+        data.contributions.tags.push(tag);
+    });
+    return data;
+}
+function toValue(typeInfo, isRequired) {
+    if (typeInfo.length === 0) {
+        return { kind: 'no-value' };
+    }
+    else if (typeInfo.length === 1) {
+        const info = typeInfo[0];
+        switch (info === null || info === void 0 ? void 0 : info.kind) {
+            case 'string':
+            case 'number':
+            case 'boolean':
+                return { kind: info.kind, required: isRequired };
+            case 'enum':
+                return { kind: info.kind, items: info.values, required: isRequired };
+        }
+    }
+    return {
+        kind: 'expression',
+        type: typeInfo.map((type) => {
+            if (type.kind === 'enum') {
+                return type.values.join('|');
+            }
+            else if (type.kind === 'expression') {
+                return {
+                    imports: type.imports.map((imp) => stringifyImportSource(imp)),
+                    expression: type.expression,
+                };
+            }
+            else {
+                return type.kind;
+            }
+        }),
+        required: isRequired,
+    };
+}
+function stringifyImportSource(imp) {
+    return imp.exportName != null
+        ? `import { ${imp.exportName !== imp.localName
+            ? `${imp.exportName} as ${imp.localName}`
+            : `${imp.localName}`} } from '${imp.moduleName}`
+        : `import ${imp.localName} from ${imp.moduleName}`;
+}
+function stringifyDefaultValue(info) {
+    if (info == null)
+        return;
+    if (info.kind === 'value')
+        return info.value;
+    if (info.kind === 'function')
+        return info.expression;
+    return (info.imports.map((imp) => stringifyImportSource(imp)).join('\n') +
+        '\n' +
+        info.expression);
+}
+
+function getComponentFromFile(fileName) {
+    if (fileName.endsWith('.vue') || fileName.endsWith('.tsx')) {
+        const name = getComponentName$1(fileName);
+        return [
+            {
+                name,
+                aliases: getComponentNameAliases(fileName),
+                source: {
+                    moduleName: fileName,
+                    localName: name,
+                },
+            },
+        ];
+    }
+    return [];
+}
+function getComponentsFromPackageJSON(rootDir, pkg, require) {
+    const components = [];
+    components.push(...getComponentsFromVuePackage(getPackageJSON(require, rootDir, 'vue').version));
+    const packages = Array.from(new Set([
+        ...Object.keys(pkg.devDependencies),
+        ...Object.keys(pkg.dependencies),
+    ]));
+    packages.forEach((packageName) => {
+        if (packageName === 'vue') ;
+        else if (packageName === 'vue-router') {
+            components.push(...getComponentsFromVueRouterPackage(getPackageJSON(require, rootDir, 'vue-router').version));
+        }
+        else {
+            components.push(...getComponentsFromPackage(require, rootDir, packageName));
+        }
+    });
+    return components;
+}
+function getPackageJSON(require, rootDir, packageName) {
+    try {
+        return requireFileFromPackage(require, packageName, 'package.json', rootDir);
+    }
+    catch (error) {
+        return { name: packageName, version: '3.0.0' };
+    }
+}
+const getPathsCache = new Map();
+function getPaths(dir) {
+    if (getPathsCache.has(dir)) {
+        return getPathsCache.get(dir);
+    }
+    const paths = [];
+    while (dir !== Path.posix.dirname(dir)) {
+        paths.push(`${dir}/node_modules`);
+        dir = Path.posix.dirname(dir);
+    }
+    getPathsCache.set(dir, paths);
+    return paths;
+}
+function requireFileFromPackage(require, packageName, fileName, rootDir) {
+    const paths = getPaths(rootDir);
+    const req = Path.posix.resolve(`/${packageName}`, fileName).substr(1);
+    return require(require.resolve(req, { paths }));
+}
+function getComponentsFromVuePackage(version) {
+    const components = [];
+    components.push({
+        name: 'Component',
+        aliases: ['component', 'Component'],
+        source: {
+            moduleName: 'vue',
+            localName: 'Component',
+            exportName: 'Component',
+        },
+    }, {
+        name: 'KeepAlive',
+        aliases: ['keep-alive', 'KeepAlive'],
+        source: {
+            moduleName: 'vue',
+            localName: 'KeepAlive',
+            exportName: 'KeepAlive',
+        },
+    }, {
+        name: 'Transition',
+        aliases: ['transition', 'Transition'],
+        source: {
+            moduleName: 'vue',
+            localName: 'Transition',
+            exportName: 'Transition',
+        },
+    }, {
+        name: 'TransitionGroup',
+        aliases: ['transition-group', 'TransitionGroup'],
+        source: {
+            moduleName: 'vue',
+            localName: 'TransitionGroup',
+            exportName: 'TransitionGroup',
+        },
+    });
+    if (version.startsWith('3.') || version === 'latest') {
+        components.push({
+            name: 'Suspense',
+            aliases: ['suspense', 'Suspense'],
+            source: {
+                moduleName: 'vue',
+                localName: 'Suspense',
+                exportName: 'Suspense',
+            },
+        }, {
+            name: 'Teleport',
+            aliases: ['teleport', 'Teleport'],
+            source: {
+                moduleName: 'vue',
+                localName: 'Teleport',
+                exportName: 'Teleport',
+            },
+        });
+    }
+    return components;
+}
+function getComponentsFromVueRouterPackage(_version) {
+    const components = [];
+    components.push({
+        name: 'RouterLink',
+        aliases: ['router-link', 'RouterLink'],
+        source: {
+            moduleName: 'vue-router',
+            localName: 'RouterLink',
+            exportName: 'RouterLink',
+        },
+    }, {
+        name: 'RouterView',
+        aliases: ['router-view', 'RouterView'],
+        source: {
+            moduleName: 'vue-router',
+            localName: 'RouterView',
+            exportName: 'RouterView',
+        },
+    });
+    return components;
+}
+const getComponentsFromPackageCache = new Map();
+function getComponentsFromPackage(require, rootDir, packageName) {
+    var _a, _b, _c, _d;
+    const pkg = getPackageJSON(require, rootDir, packageName);
+    const key = `${rootDir}:${packageName}@${pkg.version}`;
+    if (getComponentsFromPackageCache.has(key)) {
+        return getComponentsFromPackageCache.get(key);
+    }
+    const components = [];
+    if (pkg['web-types'] != null) {
+        try {
+            const info = requireFileFromPackage(require, packageName, pkg['web-types'], rootDir);
+            (_c = (_b = (_a = info.contributions) === null || _a === void 0 ? void 0 : _a.html) === null || _b === void 0 ? void 0 : _b.tags) === null || _c === void 0 ? void 0 : _c.forEach((tag) => {
+                var _a, _b;
+                const componentName = getComponentName$1(tag.name);
+                components.push({
+                    name: componentName,
+                    aliases: getComponentNameAliases(tag.name),
+                    source: {
+                        moduleName: packageName,
+                        localName: componentName,
+                        exportName: ((_a = tag.source) === null || _a === void 0 ? void 0 : _a.symbol) != null && ((_b = tag.source) === null || _b === void 0 ? void 0 : _b.symbol) !== 'default'
+                            ? tag.source.symbol
+                            : undefined,
+                    },
+                });
+            });
+        }
+        catch (error) {
+            // FIXME: Handle
+        }
+    }
+    else if (((_d = pkg.vetur) === null || _d === void 0 ? void 0 : _d.tags) != null) {
+        try {
+            const info = requireFileFromPackage(require, packageName, pkg.vetur.tags, rootDir);
+            Object.keys(info).forEach((tag) => {
+                const componentName = getComponentName$1(tag);
+                components.push({
+                    name: componentName,
+                    aliases: getComponentNameAliases(tag),
+                    source: {
+                        moduleName: packageName,
+                        localName: componentName,
+                        exportName: componentName,
+                    },
+                });
+            });
+        }
+        catch (error) {
+            // FIXME: Handle
+        }
+    }
+    getComponentsFromPackageCache.set(key, components);
+    return components;
+}
+
+const requireModule = require;
+
+function deepDefaults(a, b) {
+    Object.keys(b).forEach((key) => {
+        const valueA = a[key];
+        const valueB = b[key];
+        if (valueB === undefined)
+            return;
+        if (valueA == null || Array.isArray(valueB)) {
+            a[key] = valueB;
+        }
+        else if (typeof valueA === 'object' && typeof valueB === 'object') {
+            a[key] = deepDefaults(valueA, valueB);
+        }
+        else {
+            a[key] = valueB;
+        }
+    });
+    return a;
+}
+const DEFAULT_CONFIG = {
+    globalComponents: [],
+    preferences: {
+        componentsDirectories: ['src/components'],
+        script: { mode: 'normal', language: 'js' },
+        style: { language: 'css' },
+        template: {
+            directiveSyntax: 'shorthand',
+            propCase: 'camel',
+            tagCase: 'auto',
+        },
+    },
+};
+class VueProject {
+    constructor(rootDir, packageFile, packageJSON, requireModule$1 = requireModule) {
+        this.rootDir = rootDir;
+        this.packageFile = packageFile;
+        this.requireModule = requireModule$1;
+        this.isDirty = true;
+        this._globalComponents = [];
+        this._externalComponents = [];
+        this._projectComponents = new Map();
+        this._fileNames = [];
+        this._version = '3.0.0';
+        this._config = deepDefaults({}, DEFAULT_CONFIG);
+        this.packageJSON = { dependencies: {}, devDependencies: {}, ...packageJSON };
+        this.loadVueVersion();
+    }
+    get config() {
+        return this._config;
+    }
+    get version() {
+        return this._version;
+    }
+    setConfig(config) {
+        this._config = deepDefaults(this._config, config);
+    }
+    markDirty() {
+        this.isDirty = true;
+    }
+    loadGlobalComponents() {
+        this._externalComponents = getComponentsFromPackageJSON(this.rootDir, this.packageJSON, this.requireModule);
+        const KnownGlobalPackageRE = /^(vue|vue-router)$/;
+        this._globalComponents = this._externalComponents.filter((component) => KnownGlobalPackageRE.test(component.source.moduleName));
+    }
+    reloadIfNeeded() {
+        if (this.isDirty) {
+            this.loadVueVersion();
+            this.loadGlobalComponents();
+            this.refresh();
+            this.isDirty = false;
+        }
+    }
+    loadVueVersion() {
+        var _a;
+        this._version =
+            (_a = getPackageJSON(this.requireModule, this.rootDir, 'vue').version) !== null && _a !== void 0 ? _a : '3.0.0';
+    }
+    setFileNames(fileNames) {
+        const newLocalComponents = new Map();
+        this._fileNames = fileNames;
+        fileNames.forEach((fileName) => {
+            var _a;
+            if (fileName.endsWith('.vue')) {
+                newLocalComponents.set(fileName, (_a = this._projectComponents.get(fileName)) !== null && _a !== void 0 ? _a : getComponentFromFile(fileName));
+            }
+        });
+        this._projectComponents = newLocalComponents;
+    }
+    get vueFileNames() {
+        this.reloadIfNeeded();
+        return Array.from(this._projectComponents.keys());
+    }
+    get fileNames() {
+        return this._fileNames;
+    }
+    // TODO: Cache this.
+    get components() {
+        this.reloadIfNeeded();
+        return flatten([
+            this._globalComponents,
+            this._externalComponents,
+            ...this._projectComponents.values(),
+        ], 2);
+    }
+    get globalComponents() {
+        this.reloadIfNeeded();
+        return this._globalComponents;
+    }
+}
+
+class ConfiguredVueProject extends VueProject {
+    constructor(rootDir, packageFile, packageJSON, configFile, config, requireModule$1 = requireModule) {
+        super(rootDir, packageFile, packageJSON, requireModule$1);
+        this.configFile = configFile;
+        this.kind = 'configured';
+        this.setConfig(config);
+    }
+    setFileNames(fileNames) {
+        super.setFileNames(fileNames);
+        this.markDirty();
+    }
+    refresh() {
+        this.config.globalComponents.forEach((option) => {
+            var _a, _b;
+            if (typeof option === 'string') {
+                if (option in this.packageJSON.dependencies ||
+                    option in this.packageJSON.devDependencies) {
+                    this._globalComponents.push(...((_a = this._projectComponents.get(option)) !== null && _a !== void 0 ? _a : getComponentsFromPackage(this.requireModule, this.rootDir, option)));
+                }
+                else if (option.includes('*') || option.includes('{')) {
+                    micromatch.match(this._fileNames, option).forEach((fileName) => {
+                        var _a;
+                        this._globalComponents.push(...((_a = this._projectComponents.get(fileName)) !== null && _a !== void 0 ? _a : getComponentFromFile(fileName)));
+                    });
+                }
+                else {
+                    const fileName = Path.posix.resolve(Path.posix.dirname(this.configFile), option);
+                    this._globalComponents.push(...((_b = this._projectComponents.get(fileName)) !== null && _b !== void 0 ? _b : getComponentFromFile(fileName)));
+                }
+            }
+            else {
+                Object.entries(option).forEach(([name, config]) => {
+                    const componentName = getComponentName$1(name);
+                    const id = typeof config === 'string' ? config : config.moduleName;
+                    const moduleName = id in this.packageJSON.dependencies ||
+                        id in this.packageJSON.devDependencies
+                        ? id
+                        : Path.posix.resolve(Path.posix.dirname(this.configFile), id);
+                    this._globalComponents.push({
+                        name: componentName,
+                        aliases: getComponentNameAliases(name),
+                        source: {
+                            moduleName: moduleName,
+                            exportName: typeof config !== 'string' ? config.exportName : undefined,
+                            localName: componentName,
+                        },
+                    });
+                });
+            }
+        });
+    }
+}
+
+class InferredVueProject extends VueProject {
+    constructor() {
+        super(...arguments);
+        this.kind = 'inferred';
+    }
+    refresh() { }
+}
+
+function transformToFunction(content, options = {
+    kind: 'expression',
+    args: [],
+}) {
+    const ast = parse$1(content, {
+        sourceType: 'module',
+        plugins: [
+            'bigInt',
+            'optionalChaining',
+            'optionalCatchBinding',
+            'nullishCoalescingOperator',
+            'objectRestSpread',
+        ],
+        ranges: true,
+        // @ts-expect-error
+        errorRecovery: true,
+    });
+    const params = options.args.map((id) => T.identifier(id));
+    if (options.kind === 'statement') {
+        if (ast.program.body.length === 1) {
+            const statement = ast.program.body[0];
+            if (T.isExpressionStatement(statement)) {
+                const node = statement.expression;
+                if (T.isArrowFunctionExpression(node) || T.isFunctionExpression(node)) {
+                    params.push(...node.params);
+                    ast.program.body = T.isStatement(node.body)
+                        ? [node.body]
+                        : [T.expressionStatement(node.body)];
+                }
+            }
+        }
+    }
+    if (options.rewrite != null) {
+        const processed = new Set();
+        const knownIdentifiers = new Set(options.args);
+        const rewrite = options.rewrite;
+        params.forEach((node) => T.traverseFast(node, (node) => {
+            if (T.isIdentifier(node)) {
+                knownIdentifiers.add(node.name);
+            }
+        }));
+        T.traverseFast(ast, (node) => {
+            if (T.isMemberExpression(node)) {
+                processed.add(node.property);
+            }
+            else if (T.isIdentifier(node) &&
+                !processed.has(node) &&
+                !knownIdentifiers.has(node.name)) {
+                processed.add(node);
+                if ('context' in rewrite) {
+                    node.name = `${rewrite.context}.${node.name}`;
+                }
+                else if ('refs' in rewrite) {
+                    if (rewrite.refs.includes(node.name)) {
+                        node.name = `${node.name}.value`;
+                    }
+                    else if (rewrite.props.includes(node.name)) {
+                        node.name = `${rewrite.identifiers.props}.${node.name}`;
+                    }
+                    else if (node.name === '$props') {
+                        node.name = rewrite.identifiers.props;
+                    }
+                    else if (node.name === '$emit') {
+                        node.name = rewrite.identifiers.emit;
+                    }
+                    else if (node.name === '$attrs') {
+                        node.name = rewrite.identifiers.attrs;
+                    }
+                    else if (node.name === '$slots') {
+                        node.name = rewrite.identifiers.slots;
+                    }
+                }
+            }
+        });
+    }
+    const statements = ast.program.body.slice(0, -1);
+    const [lastStatement] = ast.program.body.slice(-1);
+    if (lastStatement != null) {
+        if (options.kind === 'expression') {
+            if (T.isExpressionStatement(lastStatement)) {
+                statements.push(T.returnStatement(lastStatement.expression));
+            }
+            else {
+                statements.push(lastStatement);
+            }
+        }
+        else {
+            statements.push(lastStatement);
+        }
+    }
+    if (options.name == null) {
+        const code = generate(T.arrowFunctionExpression(params, T.blockStatement(statements))).code;
+        if (params.length === 1 && T.isIdentifier(params[0])) {
+            return code.replace(params[0].name, `(${params[0].name})`);
+        }
+        return code;
+    }
+    else {
+        return generate(T.functionExpression(T.identifier(options.name), params, T.blockStatement(statements))).code.replace(/^function anonymous/, 'function ');
+    }
+}
+
+function createFullAnalyzer(plugins = [], options = {}) {
+    plugins.push(ScriptBlockAnalyzer, TemplateBlockAnalyzer, ComponentsOptionAnalyzer, EmitsOptionsAnalyzer, PropsOptionsAnalyzer, SetupOptionsAnalyzer, ScriptIdentifierSourceAnalyzer);
+    return createAnalyzer(plugins, options);
+}
+
+export { ComponentsOptionAnalyzer, ConfiguredVueProject, EmitsOptionsAnalyzer, ImplicitEmitsAnalyzer, InferredVueProject, PropsOptionsAnalyzer, ScriptBlockAnalyzer, ScriptIdentifierSourceAnalyzer, SetupOptionsAnalyzer, TemplateBlockAnalyzer, VueProject, createAnalyzer, createFullAnalyzer, createSourceRange, toVeturData, toWebTypes, transformToFunction };
+//# sourceMappingURL=index.mjs.map

@@ -1,0 +1,34 @@
+{
+  "name": "jws-jwk",
+  "version": "0.1.4",
+  "description": "Adds (some) support for JWKs to node-jws",
+  "main": "./src/index.js",
+  "browser": {
+    "./src/shims.js": "./src/browser-shims.js"
+  },
+  "directories": {
+    "lib": "src"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git://github.com/OADA/node-jws-jwk.git"
+  },
+  "keywords": [
+    "JWS",
+    "JWK",
+    "JWKs",
+    "browser"
+  ],
+  "author": "Alex Layton <alex@layton.in> (http://alex.layton.in)",
+  "license": "Apache License 2.0",
+  "bugs": {
+    "url": "https://github.com/OADA/node-jws-jwk/issues"
+  },
+  "homepage": "https://github.com/OADA/node-jws-jwk",
+  "dependencies": {
+    "jsrsasign": "0.0.3",
+    "jws": "^0.2.6",
+    "object-assign": "^1.0.0",
+    "rsa-pem-from-mod-exp": "^0.8.4"
+  }
+}

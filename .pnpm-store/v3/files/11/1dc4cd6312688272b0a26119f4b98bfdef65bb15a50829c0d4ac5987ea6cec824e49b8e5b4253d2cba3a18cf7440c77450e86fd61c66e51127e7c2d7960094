@@ -1,0 +1,66 @@
+import { SourceLocation, CompilerError, BindingMetadata, ElementNode, CompilerOptions, CodegenResult, ParserOptions, RootNode } from '@vue/compiler-core';
+import { Statement } from '@babel/types';
+import { RawSourceMap } from 'source-map';
+
+declare function parse(source: string, { sourceMap, filename, sourceRoot, pad, compiler }?: SFCParseOptions): SFCParseResult;
+
+declare interface SFCBlock {
+    type: string;
+    content: string;
+    attrs: Record<string, string | true>;
+    loc: SourceLocation;
+    map?: RawSourceMap;
+    lang?: string;
+    src?: string;
+}
+
+declare interface SFCDescriptor {
+    filename: string;
+    source: string;
+    template: SFCTemplateBlock | null;
+    script: SFCScriptBlock | null;
+    scriptSetup: SFCScriptBlock | null;
+    styles: SFCStyleBlock[];
+    customBlocks: SFCBlock[];
+    cssVars: string[];
+    slotted: boolean;
+}
+
+declare interface SFCParseOptions {
+    filename?: string;
+    sourceMap?: boolean;
+    sourceRoot?: string;
+    pad?: boolean | 'line' | 'space';
+    compiler?: TemplateCompiler;
+}
+
+declare interface SFCParseResult {
+    descriptor: SFCDescriptor;
+    errors: (CompilerError | SyntaxError)[];
+}
+
+declare interface SFCScriptBlock extends SFCBlock {
+    type: 'script';
+    setup?: string | boolean;
+    bindings?: BindingMetadata;
+    scriptAst?: Statement[];
+    scriptSetupAst?: Statement[];
+}
+
+declare interface SFCStyleBlock extends SFCBlock {
+    type: 'style';
+    scoped?: boolean;
+    module?: string | boolean;
+}
+
+declare interface SFCTemplateBlock extends SFCBlock {
+    type: 'template';
+    ast: ElementNode;
+}
+
+declare interface TemplateCompiler {
+    compile(template: string, options: CompilerOptions): CodegenResult;
+    parse(template: string, options: ParserOptions): RootNode;
+}
+
+export { SFCBlock, SFCDescriptor, SFCParseOptions, SFCScriptBlock, SFCStyleBlock, SFCTemplateBlock, parse };

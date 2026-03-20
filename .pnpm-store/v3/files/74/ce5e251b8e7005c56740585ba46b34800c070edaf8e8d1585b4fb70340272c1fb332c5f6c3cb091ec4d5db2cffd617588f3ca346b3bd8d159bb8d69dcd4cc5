@@ -1,0 +1,31 @@
+var version = "0.7.1";
+
+interface ImportSource {
+    moduleName: string;
+    exportName?: string;
+}
+interface ProjectPreferences {
+    componentsDirectories: string[];
+    script: {
+        mode: 'setup' | 'setup-ref' | 'normal';
+        language: 'js' | 'ts';
+    };
+    style: {
+        language: 'css' | 'scss' | 'sass' | 'styl' | 'stylus' | 'less';
+    };
+    template: {
+        directiveSyntax: 'shorthand' | 'longhand';
+        propCase: 'kebab' | 'camel';
+        tagCase: 'kebab' | 'pascal' | 'auto';
+    };
+}
+interface ProjectConfigNormalized {
+    globalComponents: Array<string | Record<string, string | ImportSource>>;
+    preferences: ProjectPreferences;
+}
+interface ProjectConfig {
+    globalComponents?: Array<string | Record<string, string | ImportSource>>;
+    preferences?: Partial<ProjectPreferences>;
+}
+
+export { ImportSource, ProjectConfig, ProjectConfigNormalized, ProjectPreferences, version };

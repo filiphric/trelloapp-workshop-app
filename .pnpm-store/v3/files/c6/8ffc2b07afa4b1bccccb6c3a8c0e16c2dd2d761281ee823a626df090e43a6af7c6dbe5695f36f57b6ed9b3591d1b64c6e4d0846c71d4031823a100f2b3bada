@@ -1,0 +1,22 @@
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.defineDevServerConfig = exports.devServer = exports.startDevServer = void 0;
+const debug_1 = require("debug");
+const startServer_1 = require("./startServer");
+const debug = debug_1.debug('cypress:vite-dev-server:vite');
+async function startDevServer(startDevServerArgs) {
+    const viteDevServer = await startServer_1.start(startDevServerArgs);
+    const app = await viteDevServer.listen();
+    const port = app.config.server.port;
+    debug('Component testing vite server started on port', port);
+    return { port, close: app.httpServer.close };
+}
+exports.startDevServer = startDevServer;
+function devServer(cypressDevServerConfig, devServerConfig) {
+    return startDevServer({ options: cypressDevServerConfig, viteConfig: devServerConfig });
+}
+exports.devServer = devServer;
+function defineDevServerConfig(devServerConfig) {
+    return devServerConfig;
+}
+exports.defineDevServerConfig = defineDevServerConfig;

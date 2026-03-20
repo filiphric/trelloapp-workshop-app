@@ -1,0 +1,407 @@
+import { ParserOptions } from '@babel/parser';
+import { NodePath } from '@babel/traverse';
+import { File, ObjectMember, Node, ObjectExpression, FunctionExpression, ArrowFunctionExpression, ObjectMethod } from '@babel/types';
+import { SFCScriptBlock, SFCTemplateBlock, SFCStyleBlock, SFCDescriptor, SFCParseOptions, SFCBlock } from '@vuedx/compiler-sfc';
+import { SourceFile, TypeChecker } from 'typescript';
+import { ProjectConfigNormalized, ProjectConfig } from '@vuedx/projectconfig';
+
+interface SourceLocation {
+    offset: number;
+    line: number;
+    column: number;
+}
+interface SourceRange {
+    source: string;
+    start: SourceLocation;
+    end: SourceLocation;
+}
+interface Addressable {
+    loc: SourceRange;
+}
+interface ImportSource {
+    moduleName: string;
+    exportName?: string;
+    localName: string;
+}
+interface ImportSourceWithLocation extends ImportSource, Addressable {
+}
+interface ComponentRegistrationInfo {
+    name: string;
+    aliases: string[];
+    source: ImportSource;
+}
+interface LocalComponentRegistrationInfo extends ComponentRegistrationInfo, Addressable {
+    kind: 'script' | 'scriptSetup';
+    source: ImportSourceWithLocation;
+}
+declare type TypeInfo = {
+    kind: 'string' | 'number' | 'boolean';
+} | {
+    kind: 'enum';
+    values: string[];
+} | {
+    kind: 'expression';
+    imports: ImportSource[];
+    expression: string;
+};
+declare type ValueInfo = {
+    kind: 'expression';
+    imports: ImportSource[];
+    expression: string;
+} | {
+    kind: 'function';
+    expression: string;
+} | {
+    kind: 'value';
+    value: string;
+};
+interface TagInfo {
+    title: string;
+    content: string;
+}
+interface Taggable {
+    tags: TagInfo[];
+}
+interface PropInfo extends Taggable, Addressable {
+    name: string;
+    description: string;
+    required: boolean;
+    type: TypeInfo[];
+    defaultValue: ValueInfo | null;
+}
+interface EmitInfo extends Taggable, Addressable {
+    name: string;
+    description: string;
+    type: TypeInfo[];
+    references: SourceRange[];
+    isInferred: boolean;
+    isDynamic: boolean;
+}
+interface SyntaxError {
+    message: string;
+    loc: SourceLocation;
+}
+interface IdentifierSource extends Addressable {
+    name: string;
+}
+interface ComponentInfo extends Taggable {
+    name: string;
+    aliases: string[];
+    fileName: string;
+    description: string;
+    components: LocalComponentRegistrationInfo[];
+    props: PropInfo[];
+    emits: EmitInfo[];
+    options?: ComponentOptionsInfo;
+    fnSetupOption?: SetupInfo;
+    scriptSetup?: ScriptSetupInfo;
+    identifierSource: Record<string, IdentifierSource>;
+    errors: SyntaxError[];
+}
+interface ComponentOptionsInfo extends Addressable {
+    properties: Record<string, Addressable>;
+}
+interface SetupInfo extends Addressable {
+    props?: {
+        identifiers: string[];
+        rest?: string;
+    } & Addressable;
+    context?: {
+        identifiers: Partial<{
+            attrs: string;
+            slots: string;
+            emit: string;
+        }>;
+        rest?: string;
+    } & Addressable;
+    return?: Addressable;
+}
+interface ScriptSetupInfo {
+    defineProps?: Addressable;
+    defineEmit?: Addressable;
+}
+interface ComponentInfoFactory {
+    addError: (message: string, loc: SourceLocation) => ComponentInfoFactory;
+    addProp: (name: string, options?: Partial<PropInfo>) => ComponentInfoFactory;
+    addEmit: (name: string, options?: Partial<EmitInfo>) => ComponentInfoFactory;
+    addLocalComponent: (name: string, source: ImportSourceWithLocation, loc?: SourceRange, kind?: LocalComponentRegistrationInfo['kind']) => ComponentInfoFactory;
+    addOption: (name: string, address: Addressable) => ComponentInfoFactory;
+    addSetup(name: '', info: Addressable): ComponentInfoFactory;
+    addSetup<K extends Exclude<keyof SetupInfo, 'loc'>>(name: K, info: SetupInfo[K]): ComponentInfoFactory;
+    addScriptSetup: (name: keyof ScriptSetupInfo, address: Addressable) => ComponentInfoFactory;
+    info: () => ComponentInfo;
+    addIdentifier: (id: string, source: string, loc: SourceRange) => void;
+}
+
+interface Context {
+    fileName: string;
+    component: ComponentInfoFactory;
+    descriptor: SFCDescriptor;
+    plugins: Plugin[];
+    parsers: {
+        sfc: SFCParseOptions;
+        babel: ParserOptions;
+        typescript?(fileName: string, source: string, options: {
+            language: 'js' | 'jsx' | 'ts' | 'tsx';
+        }): {
+            ast: File;
+            sourceFile: SourceFile;
+            typeChecker: TypeChecker;
+        };
+    };
+}
+interface ScriptAnalyzerContext extends Context {
+    mode: 'module' | 'setup';
+    ast: File;
+    source: string;
+    sourceFile?: SourceFile;
+    block: SFCScriptBlock;
+}
+declare type AbstractScriptAnalyzerFn<T extends Node = Node> = (node: NodePath<T>, context: ScriptAnalyzerContext) => void;
+interface AbstractAnalyzerHandler<T extends Node = Node> {
+    enter(node: NodePath<T>, context: ScriptAnalyzerContext): void;
+    exit(node: NodePath<T>, context: ScriptAnalyzerContext): void;
+}
+declare type ComponentDeclarationAnalyzer = AbstractScriptAnalyzerFn;
+declare type ComponentOptionsAnalyzer = AbstractScriptAnalyzerFn<ObjectExpression>;
+declare type ComponentSetupFnAnalyzer = AbstractScriptAnalyzerFn<FunctionExpression | ArrowFunctionExpression | ObjectMethod>;
+declare type BlockAnalyzer<T extends SFCBlock = SFCBlock> = (block: T, context: Context) => void;
+interface Plugin {
+    babel?: AbstractScriptAnalyzerFn | AbstractAnalyzerHandler;
+    setup?: ComponentSetupFnAnalyzer[];
+    templateExpression?(node: File, context: Context): void;
+    options?: ComponentOptionsAnalyzer[] | Record<string, AbstractScriptAnalyzerFn<ObjectMember>>;
+    declaration?: ComponentDeclarationAnalyzer[];
+    blocks?: Partial<{
+        script: BlockAnalyzer<SFCScriptBlock>;
+        template: BlockAnalyzer<SFCTemplateBlock>;
+        style: BlockAnalyzer<SFCStyleBlock>;
+    }> & Record<string, BlockAnalyzer<any>>;
+}
+
+interface Analyzer {
+    analyze(content: string, fileName?: string): ComponentInfo;
+    analyzeScript(content: string, fileName?: string, mode?: 'script' | 'scriptSetup'): ComponentInfo;
+    analyzeTemplate(content: string, fileName?: string): ComponentInfo;
+}
+declare function createAnalyzer(plugins: Plugin[], options?: Partial<Context['parsers']>): Analyzer;
+
+declare const ScriptBlockAnalyzer: Plugin;
+
+declare const ScriptIdentifierSourceAnalyzer: Plugin;
+
+declare const ComponentsOptionAnalyzer: Plugin;
+
+declare const EmitsOptionsAnalyzer: Plugin;
+declare const ImplicitEmitsAnalyzer: Plugin;
+
+declare const PropsOptionsAnalyzer: Plugin;
+
+declare const SetupOptionsAnalyzer: Plugin;
+
+declare const TemplateBlockAnalyzer: Plugin;
+
+interface VeturData {
+    tags: Record<string, {
+        description: string;
+        attributes: string[];
+    }>;
+    attributes: Record<string, {
+        type: string;
+        description: string;
+    }>;
+}
+declare function toVeturData(components: ComponentInfo[]): VeturData;
+
+declare type Source = {
+    file: string;
+    offset: number;
+} | {
+    module?: string;
+    symbol: string;
+};
+declare type Type = string | {
+    imports: string[];
+    expression: string;
+} | Array<string | {
+    imports: string[];
+    expression: string;
+}>;
+declare type Value = {
+    kind: 'no-value';
+} | {
+    kind: 'string';
+    required: boolean;
+} | {
+    kind: 'number';
+    required: boolean;
+} | {
+    kind: 'boolean';
+    required: boolean;
+} | {
+    kind: 'enum';
+    items: string[];
+    required: boolean;
+} | {
+    kind: 'expression';
+    type: Type;
+    required: boolean;
+};
+interface TagAttribute {
+    name: string;
+    description: string;
+    default?: string;
+    required: boolean;
+    value: Value;
+    'doc-url'?: string;
+}
+interface TagEvent {
+    name: string;
+    description: string;
+    arguments: Array<{
+        name: string;
+        description: string;
+        type: Type;
+        'doc-url'?: string;
+    }>;
+    'doc-url'?: string;
+}
+interface TagSlot {
+    name: string;
+    pattern: string | {
+        regex: string;
+        'case-sensitive': boolean;
+    };
+    description: string;
+    'doc-url'?: string;
+    'vue-properties': Array<{
+        name: string;
+        description: string;
+        type: Type;
+        'doc-url'?: string;
+    }>;
+}
+interface Tag {
+    name: string;
+    aliases: string[];
+    description: string;
+    attributes: TagAttribute[];
+    events: TagEvent[];
+    slots: TagSlot[];
+    source: Source;
+    'vue-model': Array<{
+        prop: string;
+        event: string;
+    }>;
+    'doc-url'?: string;
+}
+interface Attribute {
+    name: string;
+    aliases: string[];
+    description: string;
+    default?: string;
+    value: Value;
+    'doc-url'?: string;
+    'vue-argument': {
+        pattern: string | {
+            regex: string;
+            'case-sensitive': boolean;
+        };
+        description: string;
+        'doc-url'?: string;
+        required: boolean;
+    };
+    'vue-modifiers': Array<{
+        name: string;
+        pattern: string;
+        description: string;
+        'doc-url'?: string;
+    }>;
+}
+/**
+ * @see http://json.schemastore.org/web-types
+ */
+interface WebTypes {
+    framework: 'vue';
+    name: string;
+    version: string;
+    contributions: {
+        'types-syntax': 'typescript';
+        'description-markup': 'html' | 'markdown' | 'none';
+        tags: Tag[];
+        attributes: Attribute[];
+    };
+}
+declare function toWebTypes(name: string, version: string, components: ComponentInfo[]): WebTypes;
+
+interface PackageJSON {
+    dependencies: Record<string, string>;
+    devDependencies: Record<string, string>;
+}
+
+declare abstract class VueProject {
+    readonly rootDir: string;
+    readonly packageFile: string | undefined;
+    protected readonly requireModule: NodeJS.Require;
+    protected isDirty: boolean;
+    protected _globalComponents: ComponentRegistrationInfo[];
+    protected _externalComponents: ComponentRegistrationInfo[];
+    protected _projectComponents: Map<string, ComponentRegistrationInfo[]>;
+    protected _fileNames: string[];
+    protected _version: string;
+    protected _config: Readonly<ProjectConfigNormalized>;
+    packageJSON: PackageJSON;
+    constructor(rootDir: string, packageFile: string | undefined, packageJSON: Partial<PackageJSON>, requireModule?: NodeJS.Require);
+    get config(): Readonly<ProjectConfigNormalized>;
+    get version(): string;
+    setConfig(config: ProjectConfig): void;
+    markDirty(): void;
+    protected loadGlobalComponents(): void;
+    abstract kind: 'inferred' | 'configured';
+    protected abstract refresh(): void;
+    protected reloadIfNeeded(): void;
+    private loadVueVersion;
+    setFileNames(fileNames: string[]): void;
+    get vueFileNames(): string[];
+    get fileNames(): string[];
+    get components(): ComponentRegistrationInfo[];
+    get globalComponents(): ComponentRegistrationInfo[];
+}
+
+declare class ConfiguredVueProject extends VueProject {
+    readonly configFile: string;
+    kind: "configured";
+    constructor(rootDir: string, packageFile: string | undefined, packageJSON: Partial<PackageJSON>, configFile: string, config: Readonly<ProjectConfig>, requireModule?: NodeJS.Require);
+    setFileNames(fileNames: string[]): void;
+    protected refresh(): void;
+}
+
+declare class InferredVueProject extends VueProject {
+    kind: "inferred";
+    protected refresh(): void;
+}
+
+interface FunctionTransformOptions {
+    name?: string;
+    kind: 'expression' | 'statement';
+    args: string[];
+    rewrite?: {
+        context: string;
+    } | {
+        refs: string[];
+        props: string[];
+        identifiers: {
+            props: string;
+            attrs: string;
+            slots: string;
+            emit: string;
+        };
+    };
+}
+declare function transformToFunction(content: string, options?: FunctionTransformOptions): string;
+
+declare function createSourceRange(context: Context | ScriptAnalyzerContext, node: Node): SourceRange;
+
+declare function createFullAnalyzer(plugins?: Plugin[], options?: Partial<Context['parsers']>): ReturnType<typeof createAnalyzer>;
+
+export { Analyzer, ComponentInfo, ComponentRegistrationInfo, ComponentsOptionAnalyzer, ConfiguredVueProject, EmitInfo, EmitsOptionsAnalyzer, IdentifierSource, ImplicitEmitsAnalyzer, ImportSource, ImportSourceWithLocation, InferredVueProject, LocalComponentRegistrationInfo, Plugin, PropInfo, PropsOptionsAnalyzer, ScriptBlockAnalyzer, ScriptIdentifierSourceAnalyzer, ScriptSetupInfo, SetupInfo, SetupOptionsAnalyzer, SourceRange, SyntaxError, TemplateBlockAnalyzer, TypeInfo, VeturData, VueProject, WebTypes, createAnalyzer, createFullAnalyzer, createSourceRange, toVeturData, toWebTypes, transformToFunction };
