@@ -52,7 +52,6 @@ export const trelloConsole = (port: number): PluginOption => ({
             }
             case 'r': {
               fs.writeFileSync(DATABASE_PATH, EMPTY_DATABASE + '\n');
-              server.ws.send({ type: 'custom', event: 'trello:reset' });
               console.log(`  ${YELLOW}App data removed${RESET}`);
               break;
             }
@@ -64,19 +63,5 @@ export const trelloConsole = (port: number): PluginOption => ({
         });
       }
     });
-  },
-  transformIndexHtml() {
-    return [{
-      tag: 'script',
-      attrs: { type: 'module' },
-      children: `
-        if (import.meta.hot) {
-          import.meta.hot.on('trello:reset', () => {
-            window.location.href = '/';
-          });
-        }
-      `,
-      injectTo: 'body'
-    }];
   }
 });
