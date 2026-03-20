@@ -24,7 +24,7 @@ export const startServer = (): PluginOption => {
 
   app.db = router.db;
   app.use(history());
-  app.use(jsonServer.defaults({ static: '.' }));
+  app.use(jsonServer.defaults({ static: '.', logger: false }));
   app.use(nocache());
   app.use(busboy());
   app.use(jsonServer.bodyParser);

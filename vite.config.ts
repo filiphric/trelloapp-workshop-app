@@ -1,5 +1,6 @@
 import { createServer } from './backend/index';
-import { defineConfig } from 'vite';
+import { trelloConsole } from './backend/console';
+import { defineConfig, createLogger } from 'vite';
 import istanbul from 'vite-plugin-istanbul';
 import svgr from 'vite-plugin-svgr';
 import react from '@vitejs/plugin-react';
@@ -8,7 +9,11 @@ import constants from './constants'
 
 const { APP, SERVER } = constants
 
+const logger = createLogger();
+logger.info = () => {};
+
 export default defineConfig({
+  customLogger: logger,
   define: {
     'process.env': {}
   },
@@ -21,8 +26,10 @@ export default defineConfig({
       include: 'src/*',
     }),
     createServer(),
+    trelloConsole(APP),
     tsconfigPaths({ extensions: ['.ts', '.tsx', '.d.ts'] })
   ],
+  clearScreen: false,
   server: {
     port: APP,
     proxy: {
