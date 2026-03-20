@@ -168,14 +168,8 @@ fi
 printf "\r                                        \r"
 success "Repository downloaded"
 
-# ── Initialize git ───────────────────────────────────────────────
-cd "$DIR_NAME"
-git init -q
-git add -A
-git commit -q -m "Initial commit"
-success "Git initialized with clean history"
-
 # ── Install CLI dependencies ──────────────────────────────────────
+cd "$DIR_NAME"
 npm install --silent --prefix cli &>/dev/null &
 CLI_PID=$!
 spin $CLI_PID "Preparing setup wizard..."
