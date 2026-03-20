@@ -59,6 +59,36 @@ spin() {
   return $?
 }
 
+progress() {
+  local pid=$1 msg=$2
+  local width=30
+  local filled=0
+  local step=0
+  while kill -0 "$pid" 2>/dev/null; do
+    # Slow down as we approach 90%
+    if [ "$filled" -lt $((width * 9 / 10)) ]; then
+      filled=$((filled + 1))
+    fi
+    local empty=$((width - filled))
+    local bar=""
+    [ "$filled" -gt 0 ] && bar=$(printf "█%.0s" $(seq 1 "$filled"))
+    local spaces=""
+    [ "$empty" -gt 0 ] && spaces=$(printf "░%.0s" $(seq 1 "$empty"))
+    local pct=$((filled * 100 / width))
+    printf "\r  ${CYAN}%s${RESET} %s %3d%%" "${bar}${spaces}" "$msg" "$pct"
+    step=$((step + 1))
+    sleep 0.15
+  done
+  wait "$pid"
+  local exit_code=$?
+  # Fill to 100% on success
+  if [ "$exit_code" -eq 0 ]; then
+    local full_bar=$(printf "█%.0s" $(seq 1 "$width"))
+    printf "\r  ${GREEN}%s${RESET} %s 100%%\n" "$full_bar" "$msg"
+  fi
+  return $exit_code
+}
+
 # ── Welcome banner ────────────────────────────────────────────────
 printf "\n"
 printf "${CYAN}${BOLD}  ┌────────────────────────────────┐${RESET}\n"
@@ -157,7 +187,7 @@ fi
 printf "\n"
 npx --yes degit "$REPO" "$DIR_NAME" &>/dev/null &
 DEGIT_PID=$!
-spin $DEGIT_PID "Downloading repository..."
+progress $DEGIT_PID "Downloading repository..."
 if [ $? -ne 0 ]; then
   printf "\r"
   error "Failed to download repository"
@@ -165,8 +195,6 @@ if [ $? -ne 0 ]; then
   need_help
   exit 1
 fi
-printf "\r                                        \r"
-success "Repository downloaded"
 
 # ── Install CLI dependencies ──────────────────────────────────────
 cd "$DIR_NAME"
