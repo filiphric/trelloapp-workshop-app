@@ -153,24 +153,23 @@ if [ -d "$DIR_NAME" ]; then
   fi
 fi
 
-# ── Clone repository ─────────────────────────────────────────────
+# ── Download repository ──────────────────────────────────────────
 printf "\n"
-git clone --depth 1 "$REPO" "$DIR_NAME" &>/dev/null &
-CLONE_PID=$!
-spin $CLONE_PID "Cloning repository..."
+npx --yes degit "$REPO" "$DIR_NAME" &>/dev/null &
+DEGIT_PID=$!
+spin $DEGIT_PID "Downloading repository..."
 if [ $? -ne 0 ]; then
   printf "\r"
-  error "Failed to clone repository"
+  error "Failed to download repository"
   printf "  Check your internet connection and try again.\n"
   need_help
   exit 1
 fi
 printf "\r                                        \r"
-success "Repository cloned"
+success "Repository downloaded"
 
-# ── Reinitialize git ──────────────────────────────────────────────
+# ── Initialize git ───────────────────────────────────────────────
 cd "$DIR_NAME"
-rm -rf .git
 git init -q
 git add -A
 git commit -q -m "Initial commit"

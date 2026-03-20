@@ -1,41 +1,6 @@
 {
-  "boards": [
-    {
-      "name": "fdghjk",
-      "user": 0,
-      "starred": false,
-      "created": "2026-03-03",
-      "id": 1
-    }
-  ],
-  "cards": [
-    {
-      "order": 0,
-      "boardId": 1,
-      "listId": 2,
-      "name": "new card",
-      "created": "2026-03-03",
-      "deadline": "2026-03-06",
-      "description": "",
-      "completed": false,
-      "id": 1
-    }
-  ],
-  "lists": [
-    {
-      "boardId": 1,
-      "name": "list",
-      "order": 0,
-      "created": "2026-03-03",
-      "id": 1
-    },
-    {
-      "boardId": 1,
-      "name": "list",
-      "order": 1,
-      "created": "2026-03-03",
-      "id": 2
-    }
-  ],
+  "boards": [],
+  "cards": [],
+  "lists": [],
   "users": []
 }
